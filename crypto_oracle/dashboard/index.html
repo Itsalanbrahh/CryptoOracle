@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CryptoOracle</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --bg2:       #0f0f18;
+      --bg3:       #13131f;
+      --border:    #1e1e30;
+      --green:     #00ff88;
+      --red:       #ff4444;
+      --amber:     #ffaa00;
+      --blue:      #4488ff;
+      --slate:     #8892a4;
+      --text:      #c8d0dc;
+      --mono:      'IBM Plex Mono', monospace;
+      --sans:      'IBM Plex Sans', sans-serif;
+    }
+
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: var(--bg2); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* layout */
+    .app { display: grid; grid-template-rows: 48px 1fr; height: 100vh; overflow: hidden; }
+    .main { display: grid; grid-template-columns: 1fr 280px; grid-template-rows: auto auto 1fr auto; gap: 1px; background: var(--border); overflow: auto; }
+
+    /* header */
+    .header { background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; padding: 0 20px; }
+    .logo { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--green); letter-spacing: 2px; }
+    .clock { font-family: var(--mono); font-size: 12px; color: var(--slate); margin-left: auto; }
+    .ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--slate); margin-left: 12px; }
+    .ws-dot.connected { background: var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* panels */
+    .panel { background: var(--bg2); padding: 16px; }
+    .panel-title { font-family: var(--mono); font-size: 10px; font-weight: 500; color: var(--slate); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px; }
+
+    /* master card */
+    .master { grid-column: 1; grid-row: 1; }
+    .master-inner { display: flex; gap: 24px; align-items: flex-start; }
+    .action-display { font-family: var(--mono); font-size: 48px; font-weight: 600; line-height: 1; }
+    .action-BUY  { color: var(--green); text-shadow: 0 0 20px rgba(0,255,136,.3); }
+    .action-SELL { color: var(--red);   text-shadow: 0 0 20px rgba(255,68,68,.3); }
+    .action-HOLD { color: var(--amber); text-shadow: 0 0 20px rgba(255,170,0,.3); }
+    .symbol-tab { display: flex; gap: 4px; margin-bottom: 8px; }
+    .tab { font-family: var(--mono); font-size: 11px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; color: var(--slate); background: transparent; }
+    .tab.active { border-color: var(--green); color: var(--green); }
+    .confidence-ring { flex-shrink: 0; }
+    .meta-col { flex: 1; }
+    .reasoning { font-size: 13px; color: var(--text); line-height: 1.6; margin: 8px 0; }
+    .bullet-list { list-style: none; font-size: 12px; }
+    .bullet-list.green li::before { content: '▸ '; color: var(--green); }
+    .bullet-list.red   li::before { content: '▸ '; color: var(--red); }
+    .bullet-list li { margin-bottom: 3px; }
+    .pos-size { font-family: var(--mono); font-size: 12px; color: var(--amber); margin-top: 6px; }
+    .timestamp { font-family: var(--mono); font-size: 10px; color: var(--slate); margin-top: 4px; }
+
+    /* run button */
+    .run-btn { font-family: var(--mono); font-size: 11px; padding: 6px 14px; background: transparent; border: 1px solid var(--green); color: var(--green); border-radius: 3px; cursor: pointer; letter-spacing: 1px; margin-left: 8px; }
+    .run-btn:hover { background: rgba(0,255,136,.08); }
+    .run-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* agent grid */
+    .agents { grid-column: 1; grid-row: 2; }
+    .agent-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    @media(max-width:900px){ .agent-grid { grid-template-columns: repeat(2,1fr); } }
+    .agent-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 12px; transition: border-color .3s, box-shadow .3s; }
+    .agent-card.BULLISH { border-color: rgba(0,255,136,.25); box-shadow: 0 0 12px rgba(0,255,136,.06); }
+    .agent-card.BEARISH { border-color: rgba(255,68,68,.2); }
+    .agent-name { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
+    .signal-badge { display: inline-block; font-family: var(--mono); font-size: 10px; padding: 2px 6px; border-radius: 2px; margin-bottom: 6px; }
+    .signal-badge.BULLISH { background: rgba(0,255,136,.12); color: var(--green); }
+    .signal-badge.BEARISH { background: rgba(255,68,68,.12); color: var(--red); }
+    .signal-badge.NEUTRAL { background: rgba(255,170,0,.1); color: var(--amber); }
+    .conf-bar { height: 2px; background: var(--border); border-radius: 1px; margin-bottom: 6px; }
+    .conf-fill { height: 100%; border-radius: 1px; transition: width .5s ease; }
+    .conf-fill.BULLISH { background: var(--green); }
+    .conf-fill.BEARISH { background: var(--red); }
+    .conf-fill.NEUTRAL { background: var(--amber); }
+    .agent-summary { font-size: 11px; color: var(--slate); line-height: 1.5; }
+
+    /* chart */
+    .chart-panel { grid-column: 1; grid-row: 3; }
+    .chart-wrap { height: 200px; position: relative; }
+
+    /* history table */
+    .history { grid-column: 1; grid-row: 4; }
+    table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+    th { color: var(--slate); font-weight: 400; padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+    td { padding: 5px 8px; border-bottom: 1px solid rgba(30,30,48,.6); color: var(--text); vertical-align: top; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    .row-BUY  td:nth-child(2) { color: var(--green); }
+    .row-SELL td:nth-child(2) { color: var(--red); }
+    .row-HOLD td:nth-child(2) { color: var(--amber); }
+    .expand-btn { background: none; border: none; color: var(--blue); cursor: pointer; font-family: var(--mono); font-size: 10px; }
+
+    /* portfolio sidebar */
+    .sidebar { grid-column: 2; grid-row: 1 / 5; background: var(--bg2); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+    .portfolio-total { font-family: var(--mono); font-size: 22px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .portfolio-label { font-size: 11px; color: var(--slate); margin-bottom: 14px; }
+    .position-row { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; border-bottom: 1px solid rgba(30,30,48,.6); }
+    .pos-sym { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+    .pos-val { font-family: var(--mono); font-size: 11px; color: var(--text); }
+    .pos-pl { font-family: var(--mono); font-size: 10px; }
+    .pos-pl.up { color: var(--green); }
+    .pos-pl.dn { color: var(--red); }
+    .refresh-btn { font-family: var(--mono); font-size: 10px; padding: 4px 10px; background: transparent; border: 1px solid var(--border); color: var(--slate); border-radius: 2px; cursor: pointer; margin-top: 10px; }
+    .refresh-btn:hover { border-color: var(--slate); color: var(--text); }
+    .warning-banner { background: rgba(255,170,0,.07); border: 1px solid rgba(255,170,0,.2); border-radius: 3px; padding: 8px; font-size: 10px; color: var(--amber); margin-top: 14px; line-height: 1.5; }
+
+    /* telegram footer */
+    .tg-footer { grid-column: 1 / 3; background: var(--bg3); border-top: 1px solid var(--border); padding: 8px 20px; display: flex; gap: 32px; align-items: center; font-family: var(--mono); font-size: 10px; color: var(--slate); }
+    .tg-footer span b { color: var(--text); }
+
+    /* toast */
+    .toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 999; pointer-events: none; }
+    .toast { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 10px 14px; font-size: 12px; max-width: 280px; animation: slideIn .25s ease; }
+    .toast.BUY  { border-left: 3px solid var(--green); }
+    .toast.SELL { border-left: 3px solid var(--red); }
+    .toast.HOLD { border-left: 3px solid var(--amber); }
+    @keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+
+    /* mobile */
+    @media(max-width:768px){
+      .main { grid-template-columns: 1fr; }
+      .sidebar { grid-column: 1; grid-row: 5; border-left: none; border-top: 1px solid var(--border); }
+      .tg-footer { grid-column: 1; }
+      .master-inner { flex-direction: column; }
+      .action-display { font-size: 36px; }
+    }
+
+    .empty-state { color: var(--slate); font-size: 12px; font-family: var(--mono); padding: 20px 0; }
+    .loading { color: var(--slate); font-size: 11px; font-family: var(--mono); }
+    .error-msg { color: var(--red); font-size: 11px; font-family: var(--mono); }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+const fmt = (n, dec = 2) =>
+  n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+
+const fmtTs = iso => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('en-US', { month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12: false });
+};
+
+const AGENT_EMOJI = {
+  Kronos: '📊', Macro: '🌍', Micro: '🔬', Volume: '📦',
+  OnChain: '⛓', Sentiment: '💬', Technical: '📈',
+};
+
+// ── API calls ────────────────────────────────────────────────────────────────
+
+const api = {
+  get: url => fetch(url).then(r => r.ok ? r.json() : Promise.reject(r)),
+  post: url => fetch(url, { method: 'POST' }).then(r => r.ok ? r.json() : Promise.reject(r)),
+};
+
+// ── Confidence ring ──────────────────────────────────────────────────────────
+
+function ConfidenceRing({ value, action }) {
+  const r = 30, cx = 40, cy = 40, circ = 2 * Math.PI * r;
+  const color = action === 'BUY' ? '#00ff88' : action === 'SELL' ? '#ff4444' : '#ffaa00';
+  const pct = Math.round((value || 0) * 100);
+  const dash = (pct / 100) * circ;
+  return (
+    <svg width="80" height="80" className="confidence-ring">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1e1e30" strokeWidth="6" />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth="6"
+        strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+        transform={`rotate(-90 ${cx} ${cy})`}
+        style={{ transition: 'stroke-dasharray 0.6s ease' }} />
+      <text x={cx} y={cy + 5} textAnchor="middle" fill={color}
+        fontFamily="IBM Plex Mono" fontSize="13" fontWeight="600">{pct}%</text>
+    </svg>
+  );
+}
+
+// ── Agent card ───────────────────────────────────────────────────────────────
+
+function AgentCard({ signal }) {
+  const sig = signal.signal || 'NEUTRAL';
+  const conf = (signal.confidence || 0) * 100;
+  return (
+    <div className={`agent-card ${sig}`}>
+      <div className="agent-name">
+        {AGENT_EMOJI[signal.agent_name] || '•'} {signal.agent_name}
+      </div>
+      <span className={`signal-badge ${sig}`}>{sig}</span>
+      <div className="conf-bar">
+        <div className={`conf-fill ${sig}`} style={{ width: `${conf}%` }} />
+      </div>
+      <div className="agent-summary">{signal.summary || '—'}</div>
+    </div>
+  );
+}
+
+// ── Price chart ──────────────────────────────────────────────────────────────
+
+function PriceChart({ symbol, history }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    if (chartRef.current) { chartRef.current.destroy(); }
+
+    const labels = history.map(r => fmtTs(r.timestamp));
+    const data = history.map(() => null); // placeholder; real price needs dedicated endpoint
+
+    // Use history confidence as proxy visual until price endpoint added
+    const conf = history.map(r => (r.confidence || 0) * 100);
+
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Confidence %',
+          data: conf,
+          borderColor: '#00ff88',
+          backgroundColor: 'rgba(0,255,136,0.05)',
+          borderWidth: 1.5,
+          pointRadius: 3,
+          pointBackgroundColor: conf.map((_, i) => {
+            const a = history[i]?.action;
+            return a === 'BUY' ? '#00ff88' : a === 'SELL' ? '#ff4444' : '#ffaa00';
+          }),
+          tension: 0.3,
+          fill: true,
+        }],
+      },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: {
+          backgroundColor: '#13131f',
+          borderColor: '#1e1e30',
+          borderWidth: 1,
+          titleFont: { family: 'IBM Plex Mono', size: 10 },
+          bodyFont: { family: 'IBM Plex Mono', size: 11 },
+        }},
+        scales: {
+          x: { ticks: { color: '#8892a4', font: { family: 'IBM Plex Mono', size: 9 }, maxTicksLimit: 8 }, grid: { color: '#1e1e30' } },
+          y: { ticks: { color: '#8892a4', font: { family: 'IBM Plex Mono', size: 9 } }, grid: { color: '#1e1e30' } },
+        },
+      },
+    });
+    return () => chartRef.current?.destroy();
+  }, [history]);
+
+  return (
+    <div className="chart-wrap">
+      <canvas ref={canvasRef} />
+    </div>
+  );
+}
+
+// ── History table ─────────────────────────────────────────────────────────────
+
+function HistoryTable({ history }) {
+  const [expanded, setExpanded] = useState(null);
+  if (!history.length) return <div className="empty-state">No history yet. Run the oracle to populate.</div>;
+  return (
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Action</th><th>Conf</th><th>Top Signal</th><th>Reasoning</th></tr>
+      </thead>
+      <tbody>
+        {history.slice(0, 20).map((rec, i) => {
+          const top = (rec.agent_signals || []).sort((a,b) => b.confidence - a.confidence)[0];
+          const isExp = expanded === i;
+          return (
+            <tr key={i} className={`row-${rec.action}`}>
+              <td>{fmtTs(rec.timestamp)}</td>
+              <td style={{ fontWeight: 600 }}>{rec.action}</td>
+              <td>{Math.round((rec.confidence || 0) * 100)}%</td>
+              <td>{top ? `${AGENT_EMOJI[top.agent_name] || ''} ${top.agent_name} ${top.signal}` : '—'}</td>
+              <td>
+                {isExp ? rec.reasoning : (rec.reasoning || '').slice(0, 60) + '…'}
+                <button className="expand-btn" onClick={() => setExpanded(isExp ? null : i)}>
+                  {isExp ? ' less' : ' more'}
+                </button>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ── Portfolio sidebar ─────────────────────────────────────────────────────────
+
+function Portfolio() {
+  const [summary, setSummary] = useState(null);
+  const [positions, setPositions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr('');
+    try {
+      const [s, p] = await Promise.all([
+        api.get('/api/portfolio'),
+        api.get('/api/portfolio/crypto'),
+      ]);
+      setSummary(s); setPositions(p);
+    } catch (e) {
+      setErr('Portfolio unavailable');
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="sidebar">
+      <div className="panel-title">Portfolio</div>
+      {loading && <div className="loading">Loading…</div>}
+      {err && <div className="error-msg">{err}</div>}
+      {summary && !err && (
+        <>
+          <div className="portfolio-total">${fmt(summary.portfolio_value)}</div>
+          <div className="portfolio-label">
+            {summary.paper_trading ? 'Paper account' : 'Live account'} · Equity ${fmt(summary.equity)}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--slate)', marginBottom: 10 }}>
+            Cash ${fmt(summary.cash)} · Crypto ${fmt(summary.crypto_value)}
+          </div>
+          {positions.map(p => (
+            <div key={p.symbol} className="position-row">
+              <div>
+                <div className="pos-sym">{p.symbol}</div>
+                <div style={{ fontSize: 10, color: 'var(--slate)' }}>{p.quantity} @ ${fmt(p.average_entry_price, 4)}</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div className="pos-val">${fmt(p.market_value)}</div>
+                <div className={`pos-pl ${p.unrealized_pl_pct >= 0 ? 'up' : 'dn'}`}>
+                  {p.unrealized_pl_pct >= 0 ? '+' : ''}{fmt(p.unrealized_pl_pct)}%
+                </div>
+              </div>
+            </div>
+          ))}
+          {!positions.length && <div className="empty-state">No open crypto positions.</div>}
+        </>
+      )}
+      <button className="refresh-btn" onClick={load} disabled={loading}>↻ Refresh</button>
+      <div className="warning-banner">
+        Trading suggestions are informational only. Always verify before executing.
+      </div>
+    </div>
+  );
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+function Toasts({ toasts }) {
+  return (
+    <div className="toast-container">
+      {toasts.map(t => (
+        <div key={t.id} className={`toast ${t.action}`}>
+          <b>{t.symbol} {t.action}</b> · {Math.round(t.confidence * 100)}% confidence
+          <div style={{ fontSize: 10, color: 'var(--slate)', marginTop: 2 }}>New oracle signal received</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+
+function App() {
+  const [symbols, setSymbols] = useState(['BTC']);
+  const [activeSymbol, setActiveSymbol] = useState('BTC');
+  const [recs, setRecs] = useState({});        // keyed by symbol
+  const [history, setHistory] = useState([]);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [clock, setClock] = useState('');
+  const [running, setRunning] = useState(false);
+  const [toasts, setToasts] = useState([]);
+
+  const wsRef = useRef(null);
+  const toastTimers = useRef({});
+
+  // Clock
+  useEffect(() => {
+    const tick = () => setClock(new Date().toUTCString().slice(17, 25) + ' UTC');
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Load watchlist + initial data
+  useEffect(() => {
+    (async () => {
+      try {
+        const wl = await api.get('/api/watchlist');
+        if (wl.length) { setSymbols(wl); setActiveSymbol(wl[0]); }
+        const allRecs = await api.get('/api/recommendations');
+        const bySymbol = {};
+        allRecs.forEach(r => { bySymbol[r.symbol] = r; });
+        setRecs(bySymbol);
+      } catch {}
+    })();
+  }, []);
+
+  // Load history for active symbol
+  useEffect(() => {
+    (async () => {
+      try {
+        const h = await api.get(`/api/recommendations/${activeSymbol}/history?limit=20`);
+        setHistory(h);
+      } catch { setHistory([]); }
+    })();
+  }, [activeSymbol, recs[activeSymbol]]);
+
+  // WebSocket
+  useEffect(() => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${proto}://${location.host}/ws/feed`;
+
+    const connect = () => {
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => setWsConnected(true);
+      ws.onclose = () => { setWsConnected(false); setTimeout(connect, 3000); };
+      ws.onerror = () => ws.close();
+
+      ws.onmessage = e => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'recommendation') {
+            const rec = msg.data;
+            setRecs(prev => ({ ...prev, [rec.symbol]: rec }));
+            // Add toast
+            const id = Date.now();
+            setToasts(prev => [...prev, { ...rec, id }]);
+            toastTimers.current[id] = setTimeout(() => {
+              setToasts(prev => prev.filter(t => t.id !== id));
+            }, 5000);
+          }
+        } catch {}
+      };
+    };
+    connect();
+    return () => { wsRef.current?.close(); Object.values(toastTimers.current).forEach(clearTimeout); };
+  }, []);
+
+  const triggerRun = async () => {
+    setRunning(true);
+    try { await api.post(`/api/run/${activeSymbol}`); }
+    catch {}
+    finally { setTimeout(() => setRunning(false), 3000); }
+  };
+
+  const rec = recs[activeSymbol];
+  const signals = rec?.agent_signals || [];
+
+  return (
+    <div className="app">
+      {/* Header */}
+      <div className="header">
+        <div className="logo">CRYPTO ORACLE</div>
+        <div className="clock">{clock}</div>
+        <div className={`ws-dot ${wsConnected ? 'connected' : ''}`} title={wsConnected ? 'Live' : 'Disconnected'} />
+        <button className="run-btn" onClick={triggerRun} disabled={running}>
+          {running ? '⟳ RUNNING…' : '▶ RUN ORACLE'}
+        </button>
+      </div>
+
+      {/* Main grid */}
+      <div className="main">
+
+        {/* Master recommendation */}
+        <div className="panel master">
+          <div className="symbol-tab">
+            {symbols.map(s => (
+              <button key={s} className={`tab ${s === activeSymbol ? 'active' : ''}`} onClick={() => setActiveSymbol(s)}>{s}</button>
+            ))}
+          </div>
+          <div className="panel-title">Master Recommendation</div>
+          {rec ? (
+            <div className="master-inner">
+              <ConfidenceRing value={rec.confidence} action={rec.action} />
+              <div className="meta-col">
+                <div className={`action-display action-${rec.action}`}>{rec.action}</div>
+                <div className="reasoning">{rec.reasoning}</div>
+                {rec.key_catalysts?.length > 0 && (
+                  <ul className="bullet-list green">
+                    {rec.key_catalysts.slice(0,3).map((c,i) => <li key={i}>{c}</li>)}
+                  </ul>
+                )}
+                {rec.key_risks?.length > 0 && (
+                  <ul className="bullet-list red" style={{ marginTop: 4 }}>
+                    {rec.key_risks.slice(0,2).map((r,i) => <li key={i}>{r}</li>)}
+                  </ul>
+                )}
+                {rec.suggested_position_size && (
+                  <div className="pos-size">💼 {rec.suggested_position_size}</div>
+                )}
+                <div className="timestamp">Updated: {fmtTs(rec.timestamp)}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-state">No recommendation yet — click ▶ RUN ORACLE</div>
+          )}
+        </div>
+
+        {/* Agent signal grid */}
+        <div className="panel agents">
+          <div className="panel-title">Agent Signals</div>
+          {signals.length > 0 ? (
+            <div className="agent-grid">
+              {signals.map(s => <AgentCard key={s.agent_name} signal={s} />)}
+            </div>
+          ) : (
+            <div className="empty-state">Run the oracle to see agent signals.</div>
+          )}
+        </div>
+
+        {/* Price / confidence chart */}
+        <div className="panel chart-panel">
+          <div className="panel-title">Confidence History — {activeSymbol}</div>
+          <PriceChart symbol={activeSymbol} history={history.slice().reverse()} />
+        </div>
+
+        {/* History table */}
+        <div className="panel history">
+          <div className="panel-title">Recommendation History — {activeSymbol}</div>
+          <HistoryTable history={history} />
+        </div>
+
+        {/* Portfolio sidebar */}
+        <Portfolio />
+      </div>
+
+      {/* Toasts */}
+      <Toasts toasts={toasts} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
