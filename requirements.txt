@@ -2,11 +2,14 @@
 anthropic>=0.40.0
 pydantic>=2.7.0
 
-# Kronos — probabilistic time-series forecasting
+# Kronos OHLCV foundation model dependencies
+# (model code cloned separately — see 'make kronos-setup')
 # CPU-only torch: pip install torch --index-url https://download.pytorch.org/whl/cpu
-# GPU torch:      pip install torch  (pulls CUDA build automatically)
+# GPU / MPS torch: pip install torch   (auto-selects correct build)
 torch>=2.2.0
-chronos-forecasting>=1.5.0
+einops==0.8.1
+safetensors>=0.4.0
+huggingface_hub>=0.20.0
 
 # Web framework
 fastapi>=0.110.0
@@ -33,3 +36,6 @@ websockets>=12.0
 
 # Utils
 python-dotenv>=1.0.0
+pandas>=2.0.0
+numpy>=1.26.0
+tqdm>=4.67.0

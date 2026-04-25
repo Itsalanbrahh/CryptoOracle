@@ -1,4 +1,4 @@
-.PHONY: run dev db-init stop logs install
+.PHONY: run dev db-init install kronos-setup stop logs
 
 run:
 	python -m crypto_oracle.main
@@ -11,6 +11,21 @@ db-init:
 
 install:
 	pip install -r requirements.txt
+
+# Clone the Kronos model repo (required for the Kronos agent)
+kronos-setup:
+	@if [ -d "vendor/kronos" ]; then \
+		echo "Kronos repo already at vendor/kronos — pulling latest..."; \
+		git -C vendor/kronos pull; \
+	else \
+		mkdir -p vendor && \
+		git clone https://github.com/shiyu-coder/Kronos.git vendor/kronos; \
+	fi
+	@echo ""
+	@echo "Kronos cloned. Add this to your .env:"
+	@echo "  KRONOS_REPO_PATH=vendor/kronos"
+	@echo ""
+	@echo "Models will download from HuggingFace on first oracle run (~100-400MB)."
 
 stop:
 	@pkill -f "uvicorn crypto_oracle" || true
