@@ -126,10 +126,36 @@ def _load_predictor():
 # Symbol maps
 # ---------------------------------------------------------------------------
 
-_BINANCE_MAP = {
-    "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
-    "ADA": "ADAUSDT", "DOGE": "DOGEUSDT", "XRP": "XRPUSDT",
-    "AVAX": "AVAXUSDT", "LTC": "LTCUSDT",
+# Kraken daily OHLCV — no geo-restriction, full OHLCV, 720+ days history
+_KRAKEN_MAP = {
+    "BTC":  "XBTUSD",
+    "ETH":  "ETHUSD",
+    "SOL":  "SOLUSD",
+    "ADA":  "ADAUSD",
+    "DOGE": "XDGUSD",
+    "XRP":  "XXRPZUSD",
+    "AVAX": "AVAXUSD",
+    "LTC":  "XLTCZUSD",
+    "LINK": "LINKUSD",
+    "UNI":  "UNIUSD",
+    "AAVE": "AAVEUSD",
+    "BCH":  "BCHUSD",
+}
+
+# CoinGecko OHLC fallback (no volume, but always accessible)
+_COINGECKO_MAP = {
+    "BTC":  "bitcoin",
+    "ETH":  "ethereum",
+    "SOL":  "solana",
+    "ADA":  "cardano",
+    "DOGE": "dogecoin",
+    "XRP":  "ripple",
+    "AVAX": "avalanche-2",
+    "LTC":  "litecoin",
+    "LINK": "chainlink",
+    "UNI":  "uniswap",
+    "AAVE": "aave",
+    "BCH":  "bitcoin-cash",
 }
 
 
@@ -145,54 +171,93 @@ class KronosAgent(BaseAgent):
         if len(ohlcv) < 30:
             return {"ohlcv": ohlcv, "forecast": {}, "method": "insufficient_data"}
 
+        cfg = getattr(self, "_db_agent_config", {})
         predictor = _load_predictor()
         if predictor is not None:
-            forecast = await self._kronos_forecast(predictor, ohlcv)
+            forecast = await self._kronos_forecast(predictor, ohlcv, cfg)
             method = "kronos"
         else:
-            forecast = _gbm_monte_carlo([c["close"] for c in ohlcv])
+            forecast = _gbm_monte_carlo([c["close"] for c in ohlcv], cfg)
             method = "gbm_monte_carlo"
 
         return {
             "current_price": ohlcv[-1]["close"],
-            "ohlcv_tail": ohlcv[-7:],
+            "ohlcv_tail": ohlcv[-30:],
             "forecast": forecast,
             "method": method,
         }
 
     async def _fetch_ohlcv(self, symbol: str) -> list[dict]:
-        """Fetch daily OHLCV from Binance klines (free, no auth needed)."""
-        pair = _BINANCE_MAP.get(symbol.upper(), f"{symbol.upper()}USDT")
-        url = (
-            f"https://api.binance.com/api/v3/klines"
-            f"?symbol={pair}&interval=1d&limit=400"
-        )
+        """Fetch daily OHLCV — Kraken primary (no geo-restriction), CoinGecko fallback."""
+        rows = await self._fetch_kraken(symbol)
+        if len(rows) >= 30:
+            return rows
+        logger.warning("Kraken returned %d rows for %s, trying CoinGecko", len(rows), symbol)
+        return await self._fetch_coingecko(symbol)
+
+    async def _fetch_kraken(self, symbol: str) -> list[dict]:
+        """Kraken public OHLCV — interval=1440 (daily), returns ~720 rows."""
+        pair = _KRAKEN_MAP.get(symbol.upper(), f"{symbol.upper()}USD")
+        url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval=1440"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=15)
-                ) as r:
-                    raw = await r.json()
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    data = await r.json()
+            if data.get("error"):
+                logger.warning("Kraken error for %s: %s", symbol, data["error"])
+                return []
+            result = data.get("result", {})
+            pair_key = next((k for k in result if k != "last"), None)
+            if not pair_key:
+                return []
+            # Fields: [time, open, high, low, close, vwap, volume, count] — all strings except time
+            return [
+                {
+                    "timestamp": datetime.utcfromtimestamp(int(k[0])),
+                    "open":   float(k[1]),
+                    "high":   float(k[2]),
+                    "low":    float(k[3]),
+                    "close":  float(k[4]),
+                    "volume": float(k[6]),
+                }
+                for k in result[pair_key]
+            ]
+        except Exception as exc:
+            logger.warning("Kraken OHLCV fetch failed for %s: %s", symbol, exc)
+            return []
 
+    async def _fetch_coingecko(self, symbol: str) -> list[dict]:
+        """CoinGecko OHLC fallback — no volume, up to 365 days."""
+        cg_id = _COINGECKO_MAP.get(symbol.upper(), symbol.lower())
+        url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?vs_currency=usd&days=365"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    raw = await r.json()
             return [
                 {
                     "timestamp": datetime.utcfromtimestamp(k[0] / 1000),
-                    "open":  float(k[1]),
-                    "high":  float(k[2]),
-                    "low":   float(k[3]),
-                    "close": float(k[4]),
-                    "volume": float(k[5]),
+                    "open":   float(k[1]),
+                    "high":   float(k[2]),
+                    "low":    float(k[3]),
+                    "close":  float(k[4]),
+                    "volume": 0.0,
                 }
                 for k in raw
             ]
         except Exception as exc:
-            logger.warning("Binance OHLCV fetch failed for %s: %s", symbol, exc)
+            logger.warning("CoinGecko OHLCV fetch failed for %s: %s", symbol, exc)
             return []
 
     async def _kronos_forecast(
-        self, predictor: Any, ohlcv: list[dict]
+        self, predictor: Any, ohlcv: list[dict], cfg: dict
     ) -> dict[str, Any]:
         import asyncio
+
+        pred_len     = int(cfg.get("pred_len", 7))
+        sample_count = min(int(cfg.get("sample_count", 10)), 50)  # cap: >50 samples OOMs on MPS
+        temperature  = float(cfg.get("temperature", 1.0))
+        top_p        = float(cfg.get("top_p", 0.9))
 
         def _sync() -> dict:
             import pandas as pd
@@ -202,18 +267,17 @@ class KronosAgent(BaseAgent):
 
             last_ts = ohlcv[-1]["timestamp"]
             y_timestamp = pd.Series(
-                [last_ts + timedelta(days=i + 1) for i in range(7)]
+                [last_ts + timedelta(days=i + 1) for i in range(pred_len)]
             )
 
-            # Use sample_count=10 to get a forecast distribution
             pred_df = predictor.predict(
                 df=df,
                 x_timestamp=x_timestamp,
                 y_timestamp=y_timestamp,
-                pred_len=7,
-                T=1.0,
-                top_p=0.9,
-                sample_count=10,
+                pred_len=pred_len,
+                T=temperature,
+                top_p=top_p,
+                sample_count=sample_count,
                 verbose=False,
             )
 
@@ -243,22 +307,25 @@ class KronosAgent(BaseAgent):
                 else None
             )
 
+            def _f(v) -> float:
+                return round(float(v), 2)
+
             return {
-                "current_close": round(current_close, 2),
-                "median_return_7d_pct": round(median_return * 100, 3),
-                "median_close_7d": round(median_close_7d, 2),
-                "predicted_high_7d": round(max(pred_highs), 2),
-                "predicted_low_7d": round(min(pred_lows), 2),
-                "bullish_probability": round(bullish_prob, 3),
-                "implied_range_pct": round(implied_range_pct, 2),
-                "volume_trend_pct": round(vol_trend, 1) if vol_trend is not None else None,
+                "current_close": _f(current_close),
+                "median_return_7d_pct": round(float(median_return) * 100, 3),
+                "median_close_7d": _f(median_close_7d),
+                "predicted_high_7d": _f(max(pred_highs)),
+                "predicted_low_7d": _f(min(pred_lows)),
+                "bullish_probability": round(float(bullish_prob), 3),
+                "implied_range_pct": round(float(implied_range_pct), 2),
+                "volume_trend_pct": round(float(vol_trend), 1) if vol_trend is not None else None,
                 "predicted_ohlc_path": [
                     {
                         "day": i + 1,
-                        "open":  round(pred_df["open"].iloc[i], 2),
-                        "high":  round(pred_df["high"].iloc[i], 2),
-                        "low":   round(pred_df["low"].iloc[i], 2),
-                        "close": round(pred_df["close"].iloc[i], 2),
+                        "open":  _f(pred_df["open"].iloc[i]),
+                        "high":  _f(pred_df["high"].iloc[i]),
+                        "low":   _f(pred_df["low"].iloc[i]),
+                        "close": _f(pred_df["close"].iloc[i]),
                     }
                     for i in range(len(pred_df))
                 ],
@@ -267,9 +334,20 @@ class KronosAgent(BaseAgent):
         return await asyncio.to_thread(_sync)
 
     async def analyze(self, symbol: str, data: dict[str, Any]) -> AgentSignal:
-        fc   = data.get("forecast", {})
-        method = data.get("method", "unknown")
+        fc      = data.get("forecast", {})
+        method  = data.get("method", "unknown")
         current = data.get("current_price", 0)
+
+        # Short-circuit: no data means no Claude call — return NEUTRAL immediately
+        if method == "insufficient_data" or not fc:
+            return AgentSignal(
+                agent_name=self.name,
+                signal="NEUTRAL",
+                confidence=0.0,
+                summary="Insufficient OHLCV data — no forecast generated.",
+                data_points=[],
+                extra={},
+            )
 
         # Don't send the full path to Claude — just the summary metrics
         fc_summary = {k: v for k, v in fc.items() if k != "predicted_ohlc_path"}
@@ -284,12 +362,32 @@ class KronosAgent(BaseAgent):
         )
         text = await self._call_claude(_SYSTEM, prompt)
         signal, confidence, summary, data_points = self._parse_signal_from_text(text)
+
+        # Carry forecast path and recent history in `extra` for dashboard visualization
+        historical = data.get("ohlcv_tail", [])
+        extra = {
+            "method": method,
+            "current_close": round(current, 2),
+            "predicted_ohlc_path": fc.get("predicted_ohlc_path", []),
+            "predicted_high_7d": fc.get("predicted_high_7d"),
+            "predicted_low_7d": fc.get("predicted_low_7d"),
+            "bullish_probability": fc.get("bullish_probability"),
+            "median_return_7d_pct": fc.get("median_return_7d_pct"),
+            "historical_ohlcv": [
+                {"date": h["timestamp"].isoformat() if hasattr(h["timestamp"], "isoformat") else str(h["timestamp"]),
+                 "open": round(h["open"], 2), "high": round(h["high"], 2),
+                 "low": round(h["low"], 2), "close": round(h["close"], 2)}
+                for h in historical
+            ],
+        }
+
         return AgentSignal(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             summary=summary,
             data_points=data_points,
+            extra=extra,
         )
 
 
@@ -297,7 +395,11 @@ class KronosAgent(BaseAgent):
 # GBM Monte Carlo fallback
 # ---------------------------------------------------------------------------
 
-def _gbm_monte_carlo(prices: list[float]) -> dict[str, Any]:
+def _gbm_monte_carlo(prices: list[float], cfg: dict | None = None) -> dict[str, Any]:
+    cfg = cfg or {}
+    horizon = int(cfg.get("pred_len", 7))
+    n_paths = int(cfg.get("sample_count", 2000))
+
     returns = [
         (prices[i] - prices[i - 1]) / prices[i - 1]
         for i in range(1, len(prices))
@@ -307,8 +409,6 @@ def _gbm_monte_carlo(prices: list[float]) -> dict[str, Any]:
         sum((r - mu) ** 2 for r in returns) / max(len(returns) - 1, 1)
     )
     current  = prices[-1]
-    n_paths  = 2000
-    horizon  = 7
     endpoints, highs, lows = [], [], []
 
     for _ in range(n_paths):
@@ -330,13 +430,14 @@ def _gbm_monte_carlo(prices: list[float]) -> dict[str, Any]:
     sharpe   = (mu / sigma * math.sqrt(365)) if sigma > 0 else 0
 
     return {
-        "current_close":        round(current, 2),
-        "median_return_7d_pct": round((median - current) / current * 100, 3),
-        "median_close_7d":      round(median, 2),
-        "predicted_high_7d":    round(sorted(highs)[int(0.9 * n)], 2),
-        "predicted_low_7d":     round(sorted(lows)[int(0.1 * n)], 2),
-        "bullish_probability":  round(bullish, 3),
-        "implied_range_pct":    round((max(highs) - min(lows)) / current * 100, 2),
-        "sharpe_annualised":    round(sharpe, 3),
-        "note":                 "GBM Monte Carlo fallback (Kronos repo not found at KRONOS_REPO_PATH)",
+        "current_close":                   round(current, 2),
+        f"median_return_{horizon}d_pct":   round((median - current) / current * 100, 3),
+        f"median_close_{horizon}d":        round(median, 2),
+        f"predicted_high_{horizon}d":      round(sorted(highs)[int(0.9 * n)], 2),
+        f"predicted_low_{horizon}d":       round(sorted(lows)[int(0.1 * n)], 2),
+        "bullish_probability":             round(bullish, 3),
+        "implied_range_pct":               round((max(highs) - min(lows)) / current * 100, 2),
+        "sharpe_annualised":               round(sharpe, 3),
+        "forecast_horizon_days":           horizon,
+        "note":                            "GBM Monte Carlo fallback (Kronos repo not found at KRONOS_REPO_PATH)",
     }

@@ -96,8 +96,9 @@ CREATE TABLE IF NOT EXISTS strategy_state (
 );
 
 CREATE TABLE IF NOT EXISTS agent_config (
-    agent_name   TEXT PRIMARY KEY,
-    system_prompt TEXT NOT NULL,
+    agent_name    TEXT PRIMARY KEY,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    config_json   TEXT NOT NULL DEFAULT '{}',
     reason        TEXT DEFAULT '',
     updated_by    TEXT DEFAULT 'master',
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -151,6 +152,13 @@ INSERT OR IGNORE INTO stock_watchlist (symbol) VALUES ('TSLA');
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(_SCHEMA)
+        # Migrate existing agent_config tables that predate config_json column
+        try:
+            await db.execute("ALTER TABLE agent_config ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'")
+            await db.commit()
+            logger.info("Migrated agent_config: added config_json column")
+        except Exception:
+            pass  # column already exists
         await db.commit()
     logger.info("Database initialised at %s", DB_PATH)
 
@@ -737,23 +745,34 @@ async def get_agent_config(agent_name: str) -> Optional[dict]:
             "SELECT * FROM agent_config WHERE agent_name=?", (agent_name,)
         ) as cur:
             row = await cur.fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    d = dict(row)
+    d["config"] = json.loads(d.get("config_json") or "{}")
+    return d
 
 
 async def save_agent_config(
     agent_name: str,
-    system_prompt: str,
+    system_prompt: str = "",
+    config: Optional[dict] = None,
     reason: str = "",
     updated_by: str = "master",
 ) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT OR REPLACE INTO agent_config
-                (agent_name, system_prompt, reason, updated_by, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO agent_config
+                (agent_name, system_prompt, config_json, reason, updated_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(agent_name) DO UPDATE SET
+                system_prompt = CASE WHEN excluded.system_prompt != '' THEN excluded.system_prompt ELSE system_prompt END,
+                config_json   = CASE WHEN excluded.config_json   != '{}' THEN excluded.config_json ELSE config_json END,
+                reason        = excluded.reason,
+                updated_by    = excluded.updated_by,
+                updated_at    = CURRENT_TIMESTAMP
             """,
-            (agent_name, system_prompt, reason, updated_by),
+            (agent_name, system_prompt, json.dumps(config or {}), reason, updated_by),
         )
         await db.commit()
     logger.info("Agent config saved for %s (by=%s): %s", agent_name, updated_by, reason[:80])

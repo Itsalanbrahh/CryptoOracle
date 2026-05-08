@@ -71,10 +71,12 @@ STRATEGY UPDATE RULES:
 
 TOOLS — call all needed tools in a single response (you will not get a follow-up turn):
 1. make_trading_decision — REQUIRED every run.
-2. update_agent_config — OPTIONAL. Use when you spot a systematic prompt-level failure in an agent
-   (e.g. it ignores a key data field, uses wrong thresholds, or consistently misreads a market regime).
-   Require 2+ runs showing the same failure before updating. Always preserve the agent's required
-   output format: SIGNAL: BULLISH|BEARISH|NEUTRAL / CONFIDENCE: 0.XX / SUMMARY / DATA_POINTS.
+2. update_agent_config — OPTIONAL. Update an agent's system prompt AND/OR its forecast parameters.
+   Prompt: fix systematic misreads, wrong thresholds, ignored data fields. Require 2+ runs of evidence.
+   Config (Kronos): pred_len (days), sample_count (paths), temperature (1.0=diverse, 0.5=conservative),
+   top_p. Increase sample_count when Kronos confidence seems overfit; lower temperature when forecasts
+   are too volatile. Adjust pred_len to match the trade horizon you're targeting.
+   Always preserve SIGNAL/CONFIDENCE/SUMMARY/DATA_POINTS format in any prompt rewrite.
 """
 
 _TOOLS: list[dict] = [
@@ -112,13 +114,21 @@ _TOOLS: list[dict] = [
     {
         "name": "update_agent_config",
         "description": (
-            "Rewrite an agent's system prompt to fix a systematic performance issue. "
-            "Call once per agent you want to update. Always keep the agent's required output "
-            "format: SIGNAL / CONFIDENCE / SUMMARY / DATA_POINTS."
+            "Update an agent's system prompt and/or forecast parameters. "
+            "Call once per agent you want to update. "
+            "new_system_prompt: always keep SIGNAL/CONFIDENCE/SUMMARY/DATA_POINTS format. "
+            "config: agent-specific parameter overrides (see below). "
+            "Kronos config keys: pred_len (int, default 7 — forecast horizon in days), "
+            "sample_count (int, default 10 for model / 2000 for GBM — more = better distribution), "
+            "temperature (float, default 1.0 — lower = tighter/more conservative forecasts), "
+            "top_p (float, default 0.9 — nucleus sampling, lower = more conservative). "
+            "Technical config keys: lookback_days (int, default 90), rsi_period (int, default 14), "
+            "bollinger_period (int, default 20). "
+            "Omit new_system_prompt to update config only; omit config to update prompt only."
         ),
         "input_schema": {
             "type": "object",
-            "required": ["agent_name", "new_system_prompt", "reason"],
+            "required": ["agent_name", "reason"],
             "properties": {
                 "agent_name": {
                     "type": "string",
@@ -126,7 +136,11 @@ _TOOLS: list[dict] = [
                 },
                 "new_system_prompt": {
                     "type": "string",
-                    "description": "Complete replacement system prompt for the agent.",
+                    "description": "Complete replacement system prompt. Omit to leave unchanged.",
+                },
+                "config": {
+                    "type": "object",
+                    "description": "Agent-specific parameter overrides (e.g. Kronos forecast params).",
                 },
                 "reason": {
                     "type": "string",
@@ -281,11 +295,16 @@ class CryptoOracle:
         agent_configs = await get_all_agent_configs()
         config_section = ""
         if agent_configs:
-            lines = [
-                f"  {name} (updated {cfg.get('updated_at', '')[:10]}): {cfg.get('reason', '')[:120]}"
-                for name, cfg in agent_configs.items()
-            ]
-            config_section = "\n=== MASTER-UPDATED AGENT PROMPTS ===\n" + "\n".join(lines) + "\n"
+            lines = []
+            for name, cfg in agent_configs.items():
+                prompt_flag = "prompt+config" if cfg.get("system_prompt") and cfg.get("config") else (
+                    "prompt" if cfg.get("system_prompt") else "config"
+                )
+                lines.append(
+                    f"  {name} [{prompt_flag}] (updated {cfg.get('updated_at', '')[:10]}): "
+                    f"config={cfg.get('config', {})} — {cfg.get('reason', '')[:100]}"
+                )
+            config_section = "\n=== MASTER-UPDATED AGENT CONFIGS ===\n" + "\n".join(lines) + "\n"
 
         user_msg = (
             f"Symbol: {symbol}\n\n"
@@ -322,11 +341,18 @@ class CryptoOracle:
         for upd in config_updates:
             await save_agent_config(
                 agent_name=upd["agent_name"],
-                system_prompt=upd["new_system_prompt"],
+                system_prompt=upd.get("new_system_prompt", ""),
+                config=upd.get("config"),
                 reason=upd.get("reason", ""),
                 updated_by="master",
             )
-            logger.info("Master updated %s prompt: %s", upd["agent_name"], upd.get("reason", "")[:100])
+            logger.info(
+                "Master updated %s — prompt=%s config=%s reason: %s",
+                upd["agent_name"],
+                bool(upd.get("new_system_prompt")),
+                upd.get("config"),
+                upd.get("reason", "")[:100],
+            )
 
         if not decision_input:
             logger.warning("Master did not call make_trading_decision — defaulting to HOLD")

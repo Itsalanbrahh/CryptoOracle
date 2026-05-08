@@ -35,11 +35,15 @@ class BaseAgent(ABC):
             try:
                 from crypto_oracle.models.db import get_agent_config
                 config = await get_agent_config(self.name)
-                self._db_system_prompt: Optional[str] = config["system_prompt"] if config else None
+                self._db_system_prompt: Optional[str] = (config["system_prompt"] or None) if config else None
+                self._db_agent_config: dict = config["config"] if config else {}
                 if self._db_system_prompt:
                     self.logger.debug("%s: using master-updated system prompt", self.name)
+                if self._db_agent_config:
+                    self.logger.debug("%s: using master-updated config %s", self.name, self._db_agent_config)
             except Exception:
                 self._db_system_prompt = None
+                self._db_agent_config = {}
             data = await self.fetch_data(symbol)
             signal = await self.analyze(symbol, data)
             self.logger.info(
