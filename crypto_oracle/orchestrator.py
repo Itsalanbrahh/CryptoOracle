@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Optional
+from typing import Optional
 
 import anthropic
 
@@ -29,25 +29,26 @@ _SYNTH_SYSTEM = """You are the CryptoOracle master analyst running on a PAPER TR
 There is ZERO real-money risk. Your mandate is to maximise returns.
 
 You synthesise 7 specialist sub-agents AND reflect on your own track record to improve continuously.
+You also have the ability to rewrite any agent's system prompt on the fly when you spot a pattern.
 
 CONTEXT PROVIDED:
 1. Agent signals (confidence pre-weighted by recent per-agent accuracy)
 2. Past recommendation outcomes — was each BUY/SELL/HOLD correct?
 3. Per-agent accuracy scores — who has been most reliable recently
 4. Your previous strategy notes — carry forward and refine
+5. Any agent prompts you have previously updated (so you can iterate further)
 
 MANDATORY DATA QUALITY GATE (check this first):
 - If Micro confidence < 0.10 AND OnChain confidence < 0.10: primary data feeds are offline.
   These are the two highest-accuracy agents. Acting on the remaining noise signals is the
-  primary cause of losses. You MUST output HOLD with CONFIDENCE < 0.55. Do not override this.
+  primary cause of losses. Call make_trading_decision with action=HOLD, confidence < 0.55.
 - Any agent whose DATA_POINTS contains "data_feed_failure" or "data_anomaly" must be treated
   as absent — do not factor that signal into the directional decision.
 
 MANDATORY RANGE CONSOLIDATION GATE (check this second):
-- If a RANGE TRAP WARNING is present in the context: price is inside a proven loss zone.
-  Do NOT issue a SELL in consolidation. Output HOLD until a confirmed breakout occurs.
-  A breakout requires: price close outside the range AND at least one high-accuracy agent
-  confirming direction with confidence > 0.65.
+- If a RANGE TRAP WARNING is present: price is inside a proven loss zone.
+  Call make_trading_decision with action=HOLD. A breakout requires at least one high-accuracy
+  agent confirming direction with confidence > 0.65.
 
 DECISION RULES — when data quality is good:
 - 4+ agents agreeing at >55% conf → treat as high conviction, lean BUY/SELL
@@ -65,18 +66,73 @@ STRATEGY UPDATE RULES:
 - Raise confidence_threshold toward 0.75 when win rate < 40%
 - Increase auto_trade_amount by $50 per winning streak of 3, decrease by $50 per losing streak of 3
 
-Respond in this EXACT format (no extra text, no markdown):
-ACTION: BUY|SELL|HOLD
-CONFIDENCE: 0.XX
-REASONING: 2-3 sentences referencing specific agent data and price history
-CATALYSTS: item1 | item2 | item3
-RISKS: item1 | item2
-POSITION_SIZE: e.g. "20% of portfolio" or "full position close"
-AGENT_WEIGHTS: {"Kronos":1.0,"Macro":1.0,"Micro":1.0,"Volume":1.0,"OnChain":1.0,"Sentiment":1.0,"Technical":1.0}
-STRATEGY_NOTES: 2-3 sentences on what's working, what patterns you see, what you're adjusting
-CONFIDENCE_THRESHOLD: 0.XX
-AUTO_TRADE_AMOUNT: XXX
+TOOLS — call all needed tools in a single response (you will not get a follow-up turn):
+1. make_trading_decision — REQUIRED every run.
+2. update_agent_config — OPTIONAL. Use when you spot a systematic prompt-level failure in an agent
+   (e.g. it ignores a key data field, uses wrong thresholds, or consistently misreads a market regime).
+   Require 2+ runs showing the same failure before updating. Always preserve the agent's required
+   output format: SIGNAL: BULLISH|BEARISH|NEUTRAL / CONFIDENCE: 0.XX / SUMMARY / DATA_POINTS.
 """
+
+_TOOLS: list[dict] = [
+    {
+        "name": "make_trading_decision",
+        "description": (
+            "Submit the final trading recommendation and full strategy metadata update. "
+            "MUST be called exactly once per run."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": [
+                "action", "confidence", "reasoning", "catalysts", "risks",
+                "position_size", "agent_weights", "strategy_notes",
+                "confidence_threshold", "auto_trade_amount",
+            ],
+            "properties": {
+                "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "reasoning": {"type": "string", "description": "2-3 sentences referencing specific agent data"},
+                "catalysts": {"type": "array", "items": {"type": "string"}},
+                "risks": {"type": "array", "items": {"type": "string"}},
+                "position_size": {"type": "string"},
+                "agent_weights": {
+                    "type": "object",
+                    "properties": {k: {"type": "number", "minimum": 0.3, "maximum": 2.0}
+                                   for k in ["Kronos", "Macro", "Micro", "Volume", "OnChain", "Sentiment", "Technical"]},
+                },
+                "strategy_notes": {"type": "string"},
+                "confidence_threshold": {"type": "number", "minimum": 0.50, "maximum": 0.90},
+                "auto_trade_amount": {"type": "number", "minimum": 25.0, "maximum": 20000.0},
+            },
+        },
+    },
+    {
+        "name": "update_agent_config",
+        "description": (
+            "Rewrite an agent's system prompt to fix a systematic performance issue. "
+            "Call once per agent you want to update. Always keep the agent's required output "
+            "format: SIGNAL / CONFIDENCE / SUMMARY / DATA_POINTS."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["agent_name", "new_system_prompt", "reason"],
+            "properties": {
+                "agent_name": {
+                    "type": "string",
+                    "enum": ["Kronos", "Macro", "Micro", "Volume", "OnChain", "Sentiment", "Technical"],
+                },
+                "new_system_prompt": {
+                    "type": "string",
+                    "description": "Complete replacement system prompt for the agent.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Specific evidence from recent runs that motivates this change.",
+                },
+            },
+        },
+    },
+]
 
 
 class CryptoOracle:
@@ -214,8 +270,19 @@ class CryptoOracle:
         outcomes_summary = self._format_outcomes(outcomes)
         perf_summary = self._format_perf(agent_perf)
 
+        from crypto_oracle.models.db import get_all_agent_configs, save_agent_config
+
         range_warning = self._detect_range_trap(outcomes, price_at_time)
         range_section = f"\n=== RANGE TRAP WARNING ===\n{range_warning}\n" if range_warning else ""
+
+        agent_configs = await get_all_agent_configs()
+        config_section = ""
+        if agent_configs:
+            lines = [
+                f"  {name} (updated {cfg.get('updated_at', '')[:10]}): {cfg.get('reason', '')[:120]}"
+                for name, cfg in agent_configs.items()
+            ]
+            config_section = "\n=== MASTER-UPDATED AGENT PROMPTS ===\n" + "\n".join(lines) + "\n"
 
         user_msg = (
             f"Symbol: {symbol}\n\n"
@@ -226,19 +293,76 @@ class CryptoOracle:
             f"=== CURRENT SETTINGS ===\n"
             f"Confidence threshold: {strategy['confidence_threshold']}\n"
             f"Auto-trade amount: ${strategy['auto_trade_amount']:.0f}\n"
-            f"{range_section}\n"
-            f"Synthesise a recommendation AND output updated strategy metadata."
+            f"{range_section}"
+            f"{config_section}\n"
+            f"Call make_trading_decision and optionally update_agent_config."
         )
 
         msg = await self.client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1200,
+            max_tokens=2048,
             system=_SYNTH_SYSTEM,
+            tools=_TOOLS,
+            tool_choice={"type": "any"},
             messages=[{"role": "user", "content": user_msg}],
         )
-        text = msg.content[0].text
-        rec = self._parse_rec(symbol, text, signals)
-        strategy_update = self._parse_strategy(text, strategy)
+
+        decision_input: dict | None = None
+        config_updates: list[dict] = []
+        for block in msg.content:
+            if block.type == "tool_use":
+                if block.name == "make_trading_decision":
+                    decision_input = block.input
+                elif block.name == "update_agent_config":
+                    config_updates.append(block.input)
+
+        for upd in config_updates:
+            await save_agent_config(
+                agent_name=upd["agent_name"],
+                system_prompt=upd["new_system_prompt"],
+                reason=upd.get("reason", ""),
+                updated_by="master",
+            )
+            logger.info("Master updated %s prompt: %s", upd["agent_name"], upd.get("reason", "")[:100])
+
+        if not decision_input:
+            logger.warning("Master did not call make_trading_decision — defaulting to HOLD")
+            return MasterRecommendation(
+                symbol=symbol, action="HOLD", confidence=0.5,
+                reasoning="Synthesis failed to produce a decision.", agent_signals=signals,
+            ), {}
+
+        action = decision_input.get("action", "HOLD")
+        if action not in ("BUY", "SELL", "HOLD"):
+            action = "HOLD"
+
+        rec = MasterRecommendation(
+            symbol=symbol,
+            action=action,
+            confidence=max(0.0, min(1.0, float(decision_input.get("confidence", 0.5)))),
+            reasoning=decision_input.get("reasoning", ""),
+            key_catalysts=decision_input.get("catalysts", []),
+            key_risks=decision_input.get("risks", []),
+            suggested_position_size=decision_input.get("position_size", ""),
+            agent_signals=signals,
+        )
+
+        strategy_update: dict = {}
+        known = {"Kronos", "Macro", "Micro", "Volume", "OnChain", "Sentiment", "Technical"}
+        raw_weights = decision_input.get("agent_weights") or {}
+        weights = {k: max(0.3, min(2.0, float(v))) for k, v in raw_weights.items() if k in known}
+        if weights:
+            strategy_update["agent_weights"] = weights
+        notes = (decision_input.get("strategy_notes") or "").strip()
+        if notes:
+            strategy_update["strategy_notes"] = notes[:500]
+        ct = decision_input.get("confidence_threshold")
+        if ct is not None:
+            strategy_update["confidence_threshold"] = max(0.50, min(0.90, float(ct)))
+        amt = decision_input.get("auto_trade_amount")
+        if amt is not None:
+            strategy_update["auto_trade_amount"] = max(25.0, min(20000.0, float(amt)))
+
         return rec, strategy_update
 
     @staticmethod
@@ -266,6 +390,8 @@ class CryptoOracle:
             bar = "█" * int(s["accuracy_pct"] / 10) + "░" * (10 - int(s["accuracy_pct"] / 10))
             lines.append(f"  {agent:12s} {bar} {s['accuracy_pct']:.0f}% ({s['correct']}/{s['total']})")
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _detect_range_trap(outcomes: list[dict], current_price: Optional[float]) -> str:
@@ -296,82 +422,3 @@ class CryptoOracle:
             f"not a trend break. Output HOLD and wait for a confirmed breakout."
         )
 
-    @staticmethod
-    def _parse_rec(symbol: str, text: str, signals: list[AgentSignal]) -> MasterRecommendation:
-        lines: dict[str, str] = {}
-        for line in text.strip().splitlines():
-            if ":" in line:
-                k, _, v = line.partition(":")
-                lines[k.strip().upper()] = v.strip()
-
-        action = lines.get("ACTION", "HOLD").upper()
-        if action not in ("BUY", "SELL", "HOLD"):
-            action = "HOLD"
-
-        try:
-            confidence = max(0.0, min(1.0, float(lines.get("CONFIDENCE", "0.5"))))
-        except ValueError:
-            confidence = 0.5
-
-        return MasterRecommendation(
-            symbol=symbol,
-            action=action,
-            confidence=confidence,
-            reasoning=lines.get("REASONING", "Insufficient data."),
-            key_catalysts=[c.strip() for c in lines.get("CATALYSTS", "").split("|") if c.strip()],
-            key_risks=[r.strip() for r in lines.get("RISKS", "").split("|") if r.strip()],
-            suggested_position_size=lines.get("POSITION_SIZE", ""),
-            agent_signals=signals,
-        )
-
-    @staticmethod
-    def _parse_strategy(text: str, current: dict) -> dict:
-        """Extract AGENT_WEIGHTS / STRATEGY_NOTES / CONFIDENCE_THRESHOLD / AUTO_TRADE_AMOUNT."""
-        lines: dict[str, str] = {}
-        for line in text.strip().splitlines():
-            if ":" in line:
-                k, _, v = line.partition(":")
-                lines[k.strip().upper()] = v.strip()
-
-        update: dict[str, Any] = {}
-
-        # Agent weights
-        raw_w = lines.get("AGENT_WEIGHTS", "")
-        try:
-            # Handle multi-line JSON by finding the first {...} blob
-            import re
-            m = re.search(r"\{[^}]+\}", raw_w or text, re.DOTALL)
-            if m:
-                parsed = json.loads(m.group())
-                # Validate: all keys must be known agents, values 0.3–2.0
-                known = {"Kronos", "Macro", "Micro", "Volume", "OnChain", "Sentiment", "Technical"}
-                weights = {}
-                for k, v in parsed.items():
-                    if k in known:
-                        weights[k] = max(0.3, min(2.0, float(v)))
-                if weights:
-                    update["agent_weights"] = weights
-        except Exception:
-            pass
-
-        # Strategy notes
-        notes = lines.get("STRATEGY_NOTES", "").strip()
-        if notes:
-            update["strategy_notes"] = notes[:500]
-
-        # Confidence threshold
-        try:
-            ct = float(lines.get("CONFIDENCE_THRESHOLD", ""))
-            update["confidence_threshold"] = max(0.50, min(0.90, ct))
-        except (ValueError, KeyError):
-            pass
-
-        # Auto-trade amount
-        try:
-            amt_str = lines.get("AUTO_TRADE_AMOUNT", "").replace("$", "").replace(",", "").strip()
-            amt = float(amt_str)
-            update["auto_trade_amount"] = max(25.0, min(20000.0, amt))
-        except (ValueError, KeyError):
-            pass
-
-        return update

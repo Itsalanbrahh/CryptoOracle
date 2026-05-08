@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from abc import ABC, abstractmethod
 from typing import Any
@@ -11,6 +12,9 @@ import anthropic
 from crypto_oracle.models.signals import AgentSignal, AgentName
 from crypto_oracle.utils.logger import get_logger
 
+# Limit concurrent Claude calls across all agents to avoid 529 overloaded errors
+_claude_sem = asyncio.Semaphore(3)
+
 
 class BaseAgent(ABC):
     """Abstract base for all 7 specialist agents."""
@@ -18,13 +22,21 @@ class BaseAgent(ABC):
     name: AgentName
 
     def __init__(self) -> None:
-        self.client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self.client = anthropic.AsyncAnthropic(
+            api_key=os.environ["ANTHROPIC_API_KEY"],
+            max_retries=4,
+        )
         self.logger = get_logger(f"agent.{self.name}")
 
     async def run(self, symbol: str) -> AgentSignal:
         """Fetch data, call Claude, return structured signal."""
         self.logger.info("Running %s agent for %s", self.name, symbol)
         try:
+            from crypto_oracle.models.db import get_agent_config
+            config = await get_agent_config(self.name)
+            self._db_system_prompt: Optional[str] = config["system_prompt"] if config else None
+            if self._db_system_prompt:
+                self.logger.debug("%s: using master-updated system prompt", self.name)
             data = await self.fetch_data(symbol)
             signal = await self.analyze(symbol, data)
             self.logger.info(
@@ -49,13 +61,15 @@ class BaseAgent(ABC):
         """Use Claude to produce a structured AgentSignal."""
 
     async def _call_claude(self, system: str, user: str) -> str:
-        """Helper: single Claude call, returns text."""
-        msg = await self.client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        """Helper: single Claude call, returns text. DB-stored prompt overrides the default."""
+        effective_system = getattr(self, "_db_system_prompt", None) or system
+        async with _claude_sem:
+            msg = await self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=effective_system,
+                messages=[{"role": "user", "content": user}],
+            )
         return msg.content[0].text
 
     def _parse_signal_from_text(self, text: str) -> tuple[str, float, str, list[str]]:
