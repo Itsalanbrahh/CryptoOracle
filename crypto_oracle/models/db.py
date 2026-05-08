@@ -412,7 +412,7 @@ async def get_strategy_state(symbol: str) -> dict:
             "symbol": symbol.upper(),
             "agent_weights": {},
             "strategy_notes": "",
-            "confidence_threshold": 0.60,
+            "confidence_threshold": 0.52,
             "auto_trade_amount": default_amount,
         }
     return {
@@ -442,7 +442,7 @@ async def save_strategy_state(
                 symbol.upper(),
                 json.dumps(agent_weights),
                 strategy_notes,
-                max(0.50, min(0.90, confidence_threshold)),
+                max(0.48, min(0.65, confidence_threshold)),
                 max(25.0, min(20000.0, auto_trade_amount)),
             ),
         )
