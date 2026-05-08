@@ -78,10 +78,20 @@ class MicroAgent(BaseAgent):
         return data
 
     async def analyze(self, symbol: str, data: dict[str, Any]) -> AgentSignal:
+        micro = data.get("microstructure", {})
+        ticker = data.get("ticker", {})
+        if not micro and not ticker:
+            return AgentSignal(
+                agent_name=self.name,
+                signal="NEUTRAL",
+                confidence=0.0,
+                summary="Data feed failure — Binance depth and ticker both unavailable.",
+                data_points=["data_feed_failure"],
+            )
         prompt = (
             f"Symbol: {symbol}\n"
-            f"Microstructure: {json.dumps(data.get('microstructure', {}), indent=2)}\n"
-            f"24h Ticker: {json.dumps(data.get('ticker', {}), indent=2)}\n\n"
+            f"Microstructure: {json.dumps(micro, indent=2)}\n"
+            f"24h Ticker: {json.dumps(ticker, indent=2)}\n\n"
             "Analyse order book pressure and liquidity, give your signal."
         )
         text = await self._call_claude(_SYSTEM, prompt)

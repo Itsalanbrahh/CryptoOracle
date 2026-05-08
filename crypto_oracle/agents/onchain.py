@@ -74,6 +74,26 @@ class OnChainAgent(BaseAgent):
         return metrics
 
     async def analyze(self, symbol: str, data: dict[str, Any]) -> AgentSignal:
+        if symbol.upper() == "BTC":
+            stats = data.get("blockchain_stats", {})
+            fees = data.get("mempool_fees", {})
+            if not stats and not fees:
+                return AgentSignal(
+                    agent_name=self.name,
+                    signal="NEUTRAL",
+                    confidence=0.0,
+                    summary="Data feed failure — blockchain stats and mempool data both unavailable.",
+                    data_points=["data_feed_failure"],
+                )
+            # All-zero stats = API returning placeholder/anomalous values, not real data
+            if stats and stats.get("n_tx_24h", 1) == 0 and stats.get("hash_rate_gh", 1) == 0:
+                return AgentSignal(
+                    agent_name=self.name,
+                    signal="NEUTRAL",
+                    confidence=0.0,
+                    summary="Data anomaly — blockchain stats reporting zero transactions and zero hash rate.",
+                    data_points=["data_anomaly", "n_tx_24h=0", "hash_rate=0"],
+                )
         prompt = (
             f"Symbol: {symbol}\n"
             f"On-chain data: {json.dumps(data, indent=2)}\n\n"
