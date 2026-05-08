@@ -94,6 +94,15 @@ class OnChainAgent(BaseAgent):
                     summary="Data anomaly — blockchain stats reporting zero transactions and zero hash rate.",
                     data_points=["data_anomaly", "n_tx_24h=0", "hash_rate=0"],
                 )
+            # Negative total_fees = corrupted blockchain.info response
+            if stats and stats.get("total_fees_btc", 0) < 0:
+                return AgentSignal(
+                    agent_name=self.name,
+                    signal="NEUTRAL",
+                    confidence=0.0,
+                    summary="Data anomaly — blockchain.info returned negative total fees (corrupted response).",
+                    data_points=["data_anomaly", f"total_fees_btc={stats.get('total_fees_btc')}"],
+                )
         prompt = (
             f"Symbol: {symbol}\n"
             f"On-chain data: {json.dumps(data, indent=2)}\n\n"

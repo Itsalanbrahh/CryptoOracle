@@ -32,11 +32,14 @@ class BaseAgent(ABC):
         """Fetch data, call Claude, return structured signal."""
         self.logger.info("Running %s agent for %s", self.name, symbol)
         try:
-            from crypto_oracle.models.db import get_agent_config
-            config = await get_agent_config(self.name)
-            self._db_system_prompt: Optional[str] = config["system_prompt"] if config else None
-            if self._db_system_prompt:
-                self.logger.debug("%s: using master-updated system prompt", self.name)
+            try:
+                from crypto_oracle.models.db import get_agent_config
+                config = await get_agent_config(self.name)
+                self._db_system_prompt: Optional[str] = config["system_prompt"] if config else None
+                if self._db_system_prompt:
+                    self.logger.debug("%s: using master-updated system prompt", self.name)
+            except Exception:
+                self._db_system_prompt = None
             data = await self.fetch_data(symbol)
             signal = await self.analyze(symbol, data)
             self.logger.info(
