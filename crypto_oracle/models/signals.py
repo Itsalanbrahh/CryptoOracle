@@ -29,6 +29,7 @@ class AgentSignal(BaseModel):
     summary: str
     data_points: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    extra: dict = Field(default_factory=dict)  # agent-specific payload (e.g. Kronos forecast path)
 
     # populated after DB save
     recommendation_id: Optional[int] = None
@@ -44,6 +45,7 @@ class MasterRecommendation(BaseModel):
     suggested_position_size: str = ""
     agent_signals: list[AgentSignal] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    price_at_time: Optional[float] = None   # spot price when recommendation was made
 
     # populated after DB save
     id: Optional[int] = None

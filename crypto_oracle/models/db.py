@@ -144,6 +144,77 @@ CREATE TABLE IF NOT EXISTS stock_trades (
     closed_at       DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS polymarket_market_snapshots (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id      TEXT NOT NULL,
+    condition_id   TEXT,
+    question       TEXT NOT NULL,
+    slug           TEXT,
+    yes_price      REAL,
+    no_price       REAL,
+    yes_token_id   TEXT,
+    no_token_id    TEXT,
+    volume         REAL DEFAULT 0,
+    liquidity      REAL DEFAULT 0,
+    end_date_iso   TEXT,
+    fetched_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    raw_json       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS polymarket_paper_trades (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id         TEXT NOT NULL,
+    question          TEXT NOT NULL,
+    action            TEXT NOT NULL,
+    outcome           TEXT,
+    price             REAL,
+    position_size_usd REAL NOT NULL DEFAULT 0,
+    shares            REAL NOT NULL DEFAULT 0,
+    confidence        REAL,
+    max_loss_usd      REAL NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'open',
+    notes             TEXT DEFAULT '',
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    closed_at         DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS polymarket_execution_orders (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id          TEXT NOT NULL,
+    question           TEXT NOT NULL,
+    action             TEXT NOT NULL,
+    execution_mode     TEXT NOT NULL DEFAULT 'paper',
+    dry_run            INTEGER NOT NULL DEFAULT 1,
+    status             TEXT NOT NULL,
+    external_order_id  TEXT,
+    outcome            TEXT,
+    price              REAL,
+    quantity           INTEGER,
+    position_size_usd  REAL NOT NULL DEFAULT 0,
+    confidence         REAL,
+    response_json      TEXT DEFAULT '{}',
+    error_text         TEXT DEFAULT '',
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS polymarket_strategy_state (
+    market_id             TEXT PRIMARY KEY,
+    question              TEXT NOT NULL DEFAULT '',
+    last_action           TEXT NOT NULL DEFAULT 'HOLD',
+    last_confidence       REAL NOT NULL DEFAULT 0,
+    daily_loss_limit_usd  REAL NOT NULL DEFAULT 50,
+    max_position_usd      REAL NOT NULL DEFAULT 50,
+    updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS polymarket_watchlist (
+    market_id  TEXT PRIMARY KEY,
+    question   TEXT NOT NULL,
+    slug       TEXT,
+    active     INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 INSERT OR IGNORE INTO stock_watchlist (symbol) VALUES ('NVDA');
 INSERT OR IGNORE INTO stock_watchlist (symbol) VALUES ('TSLA');
 """
@@ -809,3 +880,234 @@ async def get_stock_trade_stats(symbol: Optional[str] = None) -> dict:
     d = dict(zip(["total", "closed", "open_count", "winners", "total_pnl", "avg_pnl"], row))
     d["win_rate"] = round(d["winners"] / d["closed"] * 100, 1) if d["closed"] else 0
     return d
+
+
+# ---------------------------------------------------------------------------
+# Polymarket market snapshots / watchlist / paper trades
+# ---------------------------------------------------------------------------
+
+async def save_polymarket_market_snapshot(market: dict) -> int:
+    yes = market.get("yes_outcome") or {}
+    no = market.get("no_outcome") or {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO polymarket_market_snapshots
+                (market_id, condition_id, question, slug, yes_price, no_price,
+                 yes_token_id, no_token_id, volume, liquidity, end_date_iso, raw_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                market.get("market_id"),
+                market.get("condition_id"),
+                market.get("question"),
+                market.get("slug"),
+                yes.get("price"),
+                no.get("price"),
+                yes.get("token_id"),
+                no.get("token_id"),
+                market.get("volume", 0.0),
+                market.get("liquidity", 0.0),
+                market.get("end_date_iso"),
+                json.dumps(market),
+            ),
+        )
+        row_id = cur.lastrowid
+        await db.commit()
+    return row_id
+
+
+async def get_latest_polymarket_snapshots(limit: int = 50, market_id: Optional[str] = None) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if market_id:
+            async with db.execute(
+                "SELECT * FROM polymarket_market_snapshots WHERE market_id=? ORDER BY id DESC LIMIT ?",
+                (market_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT * FROM polymarket_market_snapshots ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def add_polymarket_watchlist(market_id: str, question: str, slug: Optional[str] = None) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO polymarket_watchlist (market_id, question, slug, active) VALUES (?,?,?,1)",
+            (market_id, question, slug),
+        )
+        await db.commit()
+
+
+async def remove_polymarket_watchlist(market_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM polymarket_watchlist WHERE market_id=?", (market_id,))
+        await db.commit()
+
+
+async def get_polymarket_watchlist() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM polymarket_watchlist WHERE active=1 ORDER BY created_at DESC") as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def log_polymarket_paper_trade(
+    market_id: str,
+    question: str,
+    action: str,
+    outcome: Optional[str],
+    price: Optional[float],
+    position_size_usd: float,
+    shares: float,
+    confidence: Optional[float],
+    max_loss_usd: float = 0.0,
+    notes: str = "",
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO polymarket_paper_trades
+                (market_id, question, action, outcome, price, position_size_usd, shares, confidence, max_loss_usd, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (market_id, question, action, outcome, price, position_size_usd, shares, confidence, max_loss_usd, notes),
+        )
+        row_id = cur.lastrowid
+        await db.commit()
+    return row_id
+
+
+async def get_polymarket_paper_trades(limit: int = 50, market_id: Optional[str] = None) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if market_id:
+            async with db.execute(
+                "SELECT * FROM polymarket_paper_trades WHERE market_id=? ORDER BY id DESC LIMIT ?",
+                (market_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT * FROM polymarket_paper_trades ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def log_polymarket_execution_order(
+    market_id: str,
+    question: str,
+    action: str,
+    execution_mode: str,
+    dry_run: bool,
+    status: str,
+    outcome: Optional[str] = None,
+    price: Optional[float] = None,
+    quantity: Optional[int] = None,
+    position_size_usd: float = 0.0,
+    confidence: Optional[float] = None,
+    external_order_id: Optional[str] = None,
+    response: Optional[dict] = None,
+    error_text: str = "",
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO polymarket_execution_orders
+                (market_id, question, action, execution_mode, dry_run, status,
+                 external_order_id, outcome, price, quantity, position_size_usd,
+                 confidence, response_json, error_text)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                market_id,
+                question,
+                action,
+                execution_mode,
+                1 if dry_run else 0,
+                status,
+                external_order_id,
+                outcome,
+                price,
+                quantity,
+                position_size_usd,
+                confidence,
+                json.dumps(response or {}),
+                error_text,
+            ),
+        )
+        row_id = cur.lastrowid
+        await db.commit()
+    return row_id
+
+
+async def get_polymarket_execution_orders(limit: int = 50, market_id: Optional[str] = None) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if market_id:
+            async with db.execute(
+                "SELECT * FROM polymarket_execution_orders WHERE market_id=? ORDER BY id DESC LIMIT ?",
+                (market_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                "SELECT * FROM polymarket_execution_orders ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_polymarket_strategy_state(market_id: str) -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM polymarket_strategy_state WHERE market_id=?", (market_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return {
+            "market_id": market_id,
+            "question": "",
+            "last_action": "HOLD",
+            "last_confidence": 0.0,
+            "daily_loss_limit_usd": 50.0,
+            "max_position_usd": 50.0,
+        }
+    return dict(row)
+
+
+async def save_polymarket_strategy_state(
+    market_id: str,
+    question: str,
+    last_action: str,
+    last_confidence: float,
+    daily_loss_limit_usd: float = 50.0,
+    max_position_usd: float = 50.0,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO polymarket_strategy_state
+                (market_id, question, last_action, last_confidence, daily_loss_limit_usd, max_position_usd, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(market_id) DO UPDATE SET
+                question=excluded.question,
+                last_action=excluded.last_action,
+                last_confidence=excluded.last_confidence,
+                daily_loss_limit_usd=excluded.daily_loss_limit_usd,
+                max_position_usd=excluded.max_position_usd,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (market_id, question, last_action, last_confidence, daily_loss_limit_usd, max_position_usd),
+        )
+        await db.commit()

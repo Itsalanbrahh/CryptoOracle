@@ -1,0 +1,8 @@
+{
+  "name": "crypto-oracle-polymarket-bridge",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "polymarket-us": "^0.1.1"
+  }
+}

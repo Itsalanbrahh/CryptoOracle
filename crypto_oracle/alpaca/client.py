@@ -158,7 +158,7 @@ async def place_crypto_order(
     """
     import asyncio
 
-    max_usd = float(os.getenv("ALPACA_MAX_ORDER_USD", "500"))
+    max_usd = float(os.getenv("ALPACA_MAX_ORDER_USD", "20000"))
     if amount_usd > max_usd:
         raise ValueError(
             f"Order amount ${amount_usd:.2f} exceeds ALPACA_MAX_ORDER_USD=${max_usd:.2f}"
@@ -184,6 +184,148 @@ async def place_crypto_order(
             "notional": float(order.notional or 0),
             "status": str(order.status.value),
             "created_at": str(order.created_at),
+        }
+
+    return await asyncio.to_thread(_sync)
+
+
+async def close_crypto_position(symbol: str) -> dict[str, Any]:
+    """Close the entire position for a crypto symbol (full sell)."""
+    import asyncio
+
+    def _sync() -> dict:
+        client = _make_trading_client()
+        pair = _get_pair(symbol)
+        result = client.close_position(pair)
+        return {
+            "order_id": str(result.id),
+            "symbol": str(result.symbol),
+            "side": "sell",
+            "qty": float(result.qty or 0),
+            "status": str(result.status.value),
+        }
+
+    return await asyncio.to_thread(_sync)
+
+
+# ---------------------------------------------------------------------------
+# Stock trading
+# ---------------------------------------------------------------------------
+
+async def is_market_open() -> bool:
+    """Return True if the US stock market is currently open."""
+    import asyncio
+
+    def _sync() -> bool:
+        client = _make_trading_client()
+        clock = client.get_clock()
+        return bool(clock.is_open)
+
+    return await asyncio.to_thread(_sync)
+
+
+async def get_stock_price(symbol: str) -> float:
+    """Get latest stock mid-price via Alpaca stock data API."""
+    import asyncio
+
+    def _sync() -> float:
+        from alpaca.data.historical.stock import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestQuoteRequest
+
+        api_key = os.environ.get("ALPACA_API_KEY")
+        secret = os.environ.get("ALPACA_SECRET_KEY")
+        client = StockHistoricalDataClient(api_key=api_key, secret_key=secret)
+        req = StockLatestQuoteRequest(symbol_or_symbols=symbol.upper())
+        quotes = client.get_stock_latest_quote(req)
+        quote = quotes.get(symbol.upper())
+        if not quote:
+            return 0.0
+        ask = float(quote.ask_price or 0)
+        bid = float(quote.bid_price or 0)
+        return round((ask + bid) / 2, 4) if ask and bid else round(ask or bid, 4)
+
+    return await asyncio.to_thread(_sync)
+
+
+async def get_stock_positions() -> list[dict[str, Any]]:
+    """Return all open stock (non-crypto) positions."""
+    import asyncio
+
+    def _sync() -> list:
+        client = _make_trading_client()
+        positions = client.get_all_positions()
+        result = []
+        for p in positions:
+            asset_class = str(getattr(p, "asset_class", "")).lower()
+            if "/" in p.symbol or asset_class == "crypto":
+                continue
+            qty = float(p.qty or 0)
+            result.append({
+                "symbol": p.symbol,
+                "quantity": round(qty, 6),
+                "average_entry_price": round(float(p.avg_entry_price or 0), 4),
+                "current_price": round(float(p.current_price or 0), 4),
+                "market_value": round(float(p.market_value or 0), 2),
+                "unrealized_pl": round(float(p.unrealized_pl or 0), 2),
+                "side": str(p.side.value) if p.side else "long",
+            })
+        return result
+
+    return await asyncio.to_thread(_sync)
+
+
+async def place_stock_order(
+    symbol: str,
+    side: str,
+    amount_usd: float,
+) -> dict[str, Any]:
+    """Place a stock market order. side='buy' for long, 'sell' for short.
+
+    Uses notional (dollar amount) orders. Alpaca paper supports this for both
+    long buys and short sells on fractional-eligible stocks (NVDA, TSLA, etc.).
+    """
+    import asyncio
+
+    max_usd = float(os.getenv("ALPACA_MAX_ORDER_USD", "20000"))
+    if amount_usd > max_usd:
+        raise ValueError(
+            f"Order amount ${amount_usd:.2f} exceeds ALPACA_MAX_ORDER_USD=${max_usd:.2f}"
+        )
+
+    def _sync() -> dict:
+        client = _make_trading_client()
+        order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        req = MarketOrderRequest(
+            symbol=symbol.upper(),
+            notional=round(amount_usd, 2),
+            side=order_side,
+            time_in_force=TimeInForce.DAY,
+        )
+        order = client.submit_order(req)
+        return {
+            "order_id": str(order.id),
+            "symbol": str(order.symbol),
+            "side": str(order.side.value),
+            "notional": float(order.notional or 0),
+            "status": str(order.status.value),
+            "created_at": str(order.created_at),
+        }
+
+    return await asyncio.to_thread(_sync)
+
+
+async def close_stock_position(symbol: str) -> dict[str, Any]:
+    """Close or cover a stock position (works for both long and short)."""
+    import asyncio
+
+    def _sync() -> dict:
+        client = _make_trading_client()
+        result = client.close_position(symbol.upper())
+        return {
+            "order_id": str(result.id),
+            "symbol": str(result.symbol),
+            "qty": float(result.qty or 0),
+            "status": str(result.status.value),
         }
 
     return await asyncio.to_thread(_sync)

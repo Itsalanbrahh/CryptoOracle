@@ -15,38 +15,43 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:        #0a0a0f;
-      --bg2:       #0f0f18;
-      --bg3:       #13131f;
-      --border:    #1e1e30;
-      --green:     #00ff88;
-      --red:       #ff4444;
-      --amber:     #ffaa00;
-      --blue:      #4488ff;
-      --slate:     #8892a4;
-      --text:      #c8d0dc;
-      --mono:      'IBM Plex Mono', monospace;
-      --sans:      'IBM Plex Sans', sans-serif;
+      --bg:       #0a0a0f;
+      --bg2:      #0f0f18;
+      --bg3:      #13131f;
+      --border:   #1e1e30;
+      --green:    #00ff88;
+      --red:      #ff4444;
+      --amber:    #ffaa00;
+      --blue:     #4488ff;
+      --purple:   #aa66ff;
+      --slate:    #8892a4;
+      --text:     #c8d0dc;
+      --mono:     'IBM Plex Mono', monospace;
+      --sans:     'IBM Plex Sans', sans-serif;
     }
 
     body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
-
-    /* scrollbar */
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: var(--bg2); }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
     /* layout */
     .app { display: grid; grid-template-rows: 48px 1fr; height: 100vh; overflow: hidden; }
-    .main { display: grid; grid-template-columns: 1fr 280px; grid-template-rows: auto auto 1fr auto; gap: 1px; background: var(--border); overflow: auto; }
+    .main { display: grid; grid-template-columns: 1fr 290px; grid-template-rows: auto auto 1fr auto; gap: 1px; background: var(--border); overflow: auto; }
 
     /* header */
-    .header { background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; padding: 0 20px; }
-    .logo { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--green); letter-spacing: 2px; }
-    .clock { font-family: var(--mono); font-size: 12px; color: var(--slate); margin-left: auto; }
-    .ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--slate); margin-left: 12px; }
+    .header { background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; padding: 0 16px; flex-wrap: nowrap; overflow: hidden; }
+    .logo { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--green); letter-spacing: 2px; white-space: nowrap; }
+    .clock { font-family: var(--mono); font-size: 11px; color: var(--slate); margin-left: auto; white-space: nowrap; }
+    .ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--slate); flex-shrink: 0; }
     .ws-dot.connected { background: var(--green); animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* market hours pill */
+    .market-pill { font-family: var(--mono); font-size: 9px; padding: 2px 7px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
+    .market-pill.open  { background: rgba(0,255,136,.1); color: var(--green); border: 1px solid rgba(0,255,136,.3); }
+    .market-pill.closed { background: rgba(136,146,164,.08); color: var(--slate); border: 1px solid var(--border); }
+    .market-pill.unknown { display: none; }
 
     /* panels */
     .panel { background: var(--bg2); padding: 16px; }
@@ -59,9 +64,19 @@
     .action-BUY  { color: var(--green); text-shadow: 0 0 20px rgba(0,255,136,.3); }
     .action-SELL { color: var(--red);   text-shadow: 0 0 20px rgba(255,68,68,.3); }
     .action-HOLD { color: var(--amber); text-shadow: 0 0 20px rgba(255,170,0,.3); }
-    .symbol-tab { display: flex; gap: 4px; margin-bottom: 8px; }
+    .action-label { font-family: var(--mono); font-size: 11px; color: var(--slate); margin-top: 2px; }
+
+    /* symbol tabs */
+    .symbol-tab { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+    .tab-section-label { font-family: var(--mono); font-size: 9px; color: var(--slate); letter-spacing: 1px; padding: 0 4px; }
+    .tab-divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
     .tab { font-family: var(--mono); font-size: 11px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; color: var(--slate); background: transparent; }
-    .tab.active { border-color: var(--green); color: var(--green); }
+    .tab.active-crypto { border-color: var(--green); color: var(--green); }
+    .tab.active-stock  { border-color: var(--blue);  color: var(--blue); }
+    .tab.stock-tab { color: var(--slate); }
+    .tab.stock-tab:hover { border-color: var(--blue); color: var(--blue); }
+    .tab.crypto-tab:hover { border-color: var(--green); color: var(--green); }
+
     .confidence-ring { flex-shrink: 0; }
     .meta-col { flex: 1; }
     .reasoning { font-size: 13px; color: var(--text); line-height: 1.6; margin: 8px 0; }
@@ -73,9 +88,11 @@
     .timestamp { font-family: var(--mono); font-size: 10px; color: var(--slate); margin-top: 4px; }
 
     /* run button */
-    .run-btn { font-family: var(--mono); font-size: 11px; padding: 6px 14px; background: transparent; border: 1px solid var(--green); color: var(--green); border-radius: 3px; cursor: pointer; letter-spacing: 1px; margin-left: 8px; }
+    .run-btn { font-family: var(--mono); font-size: 11px; padding: 6px 14px; background: transparent; border: 1px solid var(--green); color: var(--green); border-radius: 3px; cursor: pointer; letter-spacing: 1px; flex-shrink: 0; }
     .run-btn:hover { background: rgba(0,255,136,.08); }
     .run-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .run-btn.stock-run { border-color: var(--blue); color: var(--blue); }
+    .run-btn.stock-run:hover { background: rgba(68,136,255,.08); }
 
     /* agent grid */
     .agents { grid-column: 1; grid-row: 2; }
@@ -85,6 +102,7 @@
     .agent-card.BULLISH { border-color: rgba(0,255,136,.25); box-shadow: 0 0 12px rgba(0,255,136,.06); }
     .agent-card.BEARISH { border-color: rgba(255,68,68,.2); }
     .agent-name { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--text); margin-bottom: 6px; }
+    .agent-method { font-family: var(--mono); font-size: 9px; color: var(--slate); margin-bottom: 4px; }
     .signal-badge { display: inline-block; font-family: var(--mono); font-size: 10px; padding: 2px 6px; border-radius: 2px; margin-bottom: 6px; }
     .signal-badge.BULLISH { background: rgba(0,255,136,.12); color: var(--green); }
     .signal-badge.BEARISH { background: rgba(255,68,68,.12); color: var(--red); }
@@ -100,8 +118,25 @@
     .chart-panel { grid-column: 1; grid-row: 3; }
     .chart-wrap { height: 200px; position: relative; }
 
+    /* kronos forecast panel */
+    .kronos-panel { grid-column: 1; grid-row: 4; }
+    .kronos-chart-wrap { height: 260px; position: relative; margin-bottom: 12px; }
+    .kronos-stat-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .kronos-stat-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 7px 10px; flex: 1; min-width: 72px; }
+    .kronos-stat-card .k-label { font-family: var(--mono); font-size: 8px; color: var(--slate); letter-spacing: 1px; text-transform: uppercase; display: block; margin-bottom: 3px; }
+    .kronos-stat-card .k-value { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); display: block; }
+    .kronos-stat-card .k-value.pos { color: var(--green); }
+    .kronos-stat-card .k-value.neg { color: var(--red); }
+    .forecast-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 4px; }
+    .forecast-day-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 6px 3px; text-align: center; }
+    .forecast-day-card.bearish { border-color: rgba(255,68,68,0.25); }
+    .forecast-day-card.bullish { border-color: rgba(0,255,136,0.25); }
+    .forecast-day-label { font-family: var(--mono); font-size: 8px; color: var(--slate); margin-bottom: 4px; letter-spacing: 1px; }
+    .forecast-day-close { font-family: var(--mono); font-size: 10px; font-weight: 600; margin-top: 3px; }
+    .forecast-day-ohlc { font-family: var(--mono); font-size: 8px; color: var(--slate); line-height: 1.7; margin-top: 2px; }
+
     /* history table */
-    .history { grid-column: 1; grid-row: 4; }
+    .history { grid-column: 1; grid-row: 5; }
     table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
     th { color: var(--slate); font-weight: 400; padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; }
     td { padding: 5px 8px; border-bottom: 1px solid rgba(30,30,48,.6); color: var(--text); vertical-align: top; }
@@ -112,22 +147,108 @@
     .expand-btn { background: none; border: none; color: var(--blue); cursor: pointer; font-family: var(--mono); font-size: 10px; }
 
     /* portfolio sidebar */
-    .sidebar { grid-column: 2; grid-row: 1 / 5; background: var(--bg2); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+    .sidebar { grid-column: 2; grid-row: 1 / 6; background: var(--bg2); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; }
     .portfolio-total { font-family: var(--mono); font-size: 22px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
     .portfolio-label { font-size: 11px; color: var(--slate); margin-bottom: 14px; }
-    .position-row { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; border-bottom: 1px solid rgba(30,30,48,.6); }
+    .position-row { display: flex; justify-content: space-between; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid rgba(30,30,48,.6); }
     .pos-sym { font-family: var(--mono); font-size: 12px; font-weight: 500; }
     .pos-val { font-family: var(--mono); font-size: 11px; color: var(--text); }
     .pos-pl { font-family: var(--mono); font-size: 10px; }
     .pos-pl.up { color: var(--green); }
     .pos-pl.dn { color: var(--red); }
+    .pos-badge { font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 2px; }
+    .pos-badge.long  { background: rgba(0,255,136,.1); color: var(--green); border: 1px solid rgba(0,255,136,.2); }
+    .pos-badge.short { background: rgba(255,68,68,.1);  color: var(--red);   border: 1px solid rgba(255,68,68,.2); }
+    .cover-btn { font-family: var(--mono); font-size: 9px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 2px; background: transparent; color: var(--slate); cursor: pointer; margin-top: 3px; }
+    .cover-btn:hover { border-color: var(--red); color: var(--red); }
     .refresh-btn { font-family: var(--mono); font-size: 10px; padding: 4px 10px; background: transparent; border: 1px solid var(--border); color: var(--slate); border-radius: 2px; cursor: pointer; margin-top: 10px; }
     .refresh-btn:hover { border-color: var(--slate); color: var(--text); }
     .warning-banner { background: rgba(255,170,0,.07); border: 1px solid rgba(255,170,0,.2); border-radius: 3px; padding: 8px; font-size: 10px; color: var(--amber); margin-top: 14px; line-height: 1.5; }
 
-    /* telegram footer */
-    .tg-footer { grid-column: 1 / 3; background: var(--bg3); border-top: 1px solid var(--border); padding: 8px 20px; display: flex; gap: 32px; align-items: center; font-family: var(--mono); font-size: 10px; color: var(--slate); }
-    .tg-footer span b { color: var(--text); }
+    /* auto-trade section */
+    .section-divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+    .auto-trade-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .toggle-wrap { display: flex; align-items: center; gap: 8px; }
+    .toggle { position: relative; width: 36px; height: 20px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 20px; cursor: pointer; transition: .2s; }
+    .toggle-slider::before { content:''; position:absolute; width:14px; height:14px; left:3px; bottom:3px; background:var(--slate); border-radius:50%; transition:.2s; }
+    .toggle input:checked + .toggle-slider { background: rgba(0,255,136,.3); }
+    .toggle input:checked + .toggle-slider::before { background: var(--green); transform: translateX(16px); }
+    .toggle-label { font-family: var(--mono); font-size: 11px; color: var(--text); }
+    .auto-status { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 10px; }
+    .auto-status.on  { background: rgba(0,255,136,.1); color: var(--green); border: 1px solid rgba(0,255,136,.3); }
+    .auto-status.off { background: rgba(136,146,164,.08); color: var(--slate); border: 1px solid var(--border); }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .setting-label { font-family: var(--mono); font-size: 10px; color: var(--slate); }
+    .setting-input { width: 72px; background: var(--bg3); border: 1px solid var(--border); border-radius: 2px; color: var(--text); font-family: var(--mono); font-size: 11px; padding: 3px 6px; outline: none; text-align: right; }
+    .setting-input:focus { border-color: var(--slate); }
+
+    /* stats cards */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+    .stat-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 8px; }
+    .stat-val { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+    .stat-val.pos { color: var(--green); }
+    .stat-val.neg { color: var(--red); }
+    .stat-val.neutral { color: var(--text); }
+    .stat-lbl { font-family: var(--mono); font-size: 9px; color: var(--slate); margin-top: 2px; letter-spacing: 1px; text-transform: uppercase; }
+
+    /* tab bars */
+    .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .tab-btn { font-family: var(--mono); font-size: 10px; padding: 6px 14px; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--slate); cursor: pointer; letter-spacing: 1px; text-transform: uppercase; margin-bottom: -1px; }
+    .tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
+    .tab-btn.active-blue { color: var(--blue); border-bottom-color: var(--blue); }
+    .trade-status-open   { color: var(--amber); font-family: var(--mono); font-size: 10px; }
+    .trade-status-closed { color: var(--slate); font-family: var(--mono); font-size: 10px; }
+    .pnl-pos { color: var(--green); font-family: var(--mono); font-size: 11px; }
+    .pnl-neg { color: var(--red); font-family: var(--mono); font-size: 11px; }
+    .badge-auto   { background: rgba(68,136,255,.12); color: var(--blue); font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 2px; }
+    .badge-manual { background: rgba(136,146,164,.1); color: var(--slate); font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 2px; }
+    .badge-long  { background: rgba(0,255,136,.1); color: var(--green); font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 2px; }
+    .badge-short { background: rgba(255,68,68,.1);  color: var(--red);   font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 2px; }
+
+    /* quick trade buttons */
+    .trade-btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .trade-btn { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 7px 16px; border-radius: 3px; cursor: pointer; letter-spacing: 1px; border: 1px solid; transition: background .15s, box-shadow .15s; }
+    .trade-btn-buy   { background: rgba(0,255,136,.1); border-color: var(--green); color: var(--green); }
+    .trade-btn-buy:hover { background: rgba(0,255,136,.2); box-shadow: 0 0 12px rgba(0,255,136,.2); }
+    .trade-btn-sell  { background: rgba(255,68,68,.1); border-color: var(--red); color: var(--red); }
+    .trade-btn-sell:hover { background: rgba(255,68,68,.2); box-shadow: 0 0 12px rgba(255,68,68,.15); }
+    .trade-btn-long  { background: rgba(0,255,136,.1); border-color: var(--green); color: var(--green); }
+    .trade-btn-long:hover { background: rgba(0,255,136,.2); box-shadow: 0 0 12px rgba(0,255,136,.2); }
+    .trade-btn-short { background: rgba(255,68,68,.1); border-color: var(--red); color: var(--red); }
+    .trade-btn-short:hover { background: rgba(255,68,68,.2); box-shadow: 0 0 12px rgba(255,68,68,.15); }
+    .trade-btn-cover { background: rgba(255,170,0,.1); border-color: var(--amber); color: var(--amber); }
+    .trade-btn-cover:hover { background: rgba(255,170,0,.2); box-shadow: 0 0 12px rgba(255,170,0,.15); }
+    .trade-btn:disabled { opacity: .35; cursor: not-allowed; box-shadow: none; }
+
+    /* modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(3px); }
+    .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 24px; width: 320px; }
+    .modal-title { font-family: var(--mono); font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+    .modal-title.buy   { color: var(--green); }
+    .modal-title.sell  { color: var(--red); }
+    .modal-title.long  { color: var(--green); }
+    .modal-title.short { color: var(--red); }
+    .modal-title.cover { color: var(--amber); }
+    .modal-label { font-family: var(--mono); font-size: 10px; color: var(--slate); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+    .modal-input { width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; color: var(--text); font-family: var(--mono); font-size: 14px; padding: 8px 10px; margin-bottom: 14px; outline: none; }
+    .modal-input:focus { border-color: var(--slate); }
+    .modal-row { display: flex; gap: 8px; margin-top: 4px; }
+    .modal-btn { flex: 1; font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 8px; border-radius: 3px; cursor: pointer; letter-spacing: 1px; border: 1px solid; }
+    .modal-btn-confirm.buy   { background: rgba(0,255,136,.15); border-color: var(--green); color: var(--green); }
+    .modal-btn-confirm.sell  { background: rgba(255,68,68,.15);  border-color: var(--red);   color: var(--red); }
+    .modal-btn-confirm.long  { background: rgba(0,255,136,.15); border-color: var(--green); color: var(--green); }
+    .modal-btn-confirm.short { background: rgba(255,68,68,.15);  border-color: var(--red);   color: var(--red); }
+    .modal-btn-confirm.cover { background: rgba(255,170,0,.15); border-color: var(--amber); color: var(--amber); }
+    .modal-btn-confirm:hover { filter: brightness(1.15); }
+    .modal-btn-cancel { background: transparent; border-color: var(--border); color: var(--slate); }
+    .modal-btn-cancel:hover { border-color: var(--slate); color: var(--text); }
+    .modal-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .modal-confirm-text { font-size: 12px; color: var(--text); margin-bottom: 14px; line-height: 1.6; }
+    .modal-confirm-detail { font-family: var(--mono); font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .modal-err { font-size: 11px; color: var(--red); margin-top: 8px; font-family: var(--mono); }
+    .modal-success { font-size: 11px; color: var(--green); margin-top: 8px; font-family: var(--mono); }
 
     /* toast */
     .toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 999; pointer-events: none; }
@@ -135,13 +256,14 @@
     .toast.BUY  { border-left: 3px solid var(--green); }
     .toast.SELL { border-left: 3px solid var(--red); }
     .toast.HOLD { border-left: 3px solid var(--amber); }
+    .toast.LONG  { border-left: 3px solid var(--green); }
+    .toast.SHORT { border-left: 3px solid var(--red); }
     @keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
 
     /* mobile */
     @media(max-width:768px){
       .main { grid-template-columns: 1fr; }
       .sidebar { grid-column: 1; grid-row: 5; border-left: none; border-top: 1px solid var(--border); }
-      .tg-footer { grid-column: 1; }
       .master-inner { flex-direction: column; }
       .action-display { font-size: 36px; }
     }
@@ -149,15 +271,22 @@
     .empty-state { color: var(--slate); font-size: 12px; font-family: var(--mono); padding: 20px 0; }
     .loading { color: var(--slate); font-size: 11px; font-family: var(--mono); }
     .error-msg { color: var(--red); font-size: 11px; font-family: var(--mono); }
+    .info-tag { font-family: var(--mono); font-size: 9px; color: var(--slate); padding: 1px 5px; border: 1px solid var(--border); border-radius: 2px; }
   </style>
 </head>
 <body>
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useEffect, useRef, useCallback, useMemo } = React;
+const { useState, useEffect, useRef, useCallback } = React;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── path-aware base (works at / and at /oracle/) ──────────────────────────────
+const API_BASE = (() => {
+  const seg = location.pathname.split('/').filter(Boolean)[0];
+  return seg && seg !== 'index.html' ? '/' + seg : '';
+})();
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 const fmt = (n, dec = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -169,18 +298,21 @@ const fmtTs = iso => {
 };
 
 const AGENT_EMOJI = {
-  Kronos: '📊', Macro: '🌍', Micro: '🔬', Volume: '📦',
+  Kronos: '⚡', Macro: '🌍', Micro: '🔬', Volume: '📦',
   OnChain: '⛓', Sentiment: '💬', Technical: '📈',
 };
 
-// ── API calls ────────────────────────────────────────────────────────────────
-
 const api = {
-  get: url => fetch(url).then(r => r.ok ? r.json() : Promise.reject(r)),
-  post: url => fetch(url, { method: 'POST' }).then(r => r.ok ? r.json() : Promise.reject(r)),
+  get:  url       => fetch(API_BASE + url).then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e))),
+  post: (url, body) => fetch(API_BASE + url, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e))),
+  del: url => fetch(API_BASE + url, { method: 'DELETE' }).then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e))),
 };
 
-// ── Confidence ring ──────────────────────────────────────────────────────────
+// ── ConfidenceRing ────────────────────────────────────────────────────────────
 
 function ConfidenceRing({ value, action }) {
   const r = 30, cx = 40, cy = 40, circ = 2 * Math.PI * r;
@@ -200,15 +332,18 @@ function ConfidenceRing({ value, action }) {
   );
 }
 
-// ── Agent card ───────────────────────────────────────────────────────────────
+// ── AgentCard ─────────────────────────────────────────────────────────────────
 
 function AgentCard({ signal }) {
   const sig = signal.signal || 'NEUTRAL';
   const conf = (signal.confidence || 0) * 100;
+  // Show GBM note for Kronos if present in summary
+  const isGbm = signal.agent_name === 'Kronos' && (signal.summary || '').toLowerCase().includes('gbm');
   return (
     <div className={`agent-card ${sig}`}>
       <div className="agent-name">
         {AGENT_EMOJI[signal.agent_name] || '•'} {signal.agent_name}
+        {isGbm && <span className="info-tag" style={{ marginLeft: 4 }}>GBM</span>}
       </div>
       <span className={`signal-badge ${sig}`}>{sig}</span>
       <div className="conf-bar">
@@ -219,22 +354,16 @@ function AgentCard({ signal }) {
   );
 }
 
-// ── Price chart ──────────────────────────────────────────────────────────────
+// ── PriceChart ────────────────────────────────────────────────────────────────
 
 function PriceChart({ symbol, history }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
-
   useEffect(() => {
     if (!canvasRef.current) return;
     if (chartRef.current) { chartRef.current.destroy(); }
-
     const labels = history.map(r => fmtTs(r.timestamp));
-    const data = history.map(() => null); // placeholder; real price needs dedicated endpoint
-
-    // Use history confidence as proxy visual until price endpoint added
     const conf = history.map(r => (r.confidence || 0) * 100);
-
     chartRef.current = new Chart(canvasRef.current, {
       type: 'line',
       data: {
@@ -250,18 +379,13 @@ function PriceChart({ symbol, history }) {
             const a = history[i]?.action;
             return a === 'BUY' ? '#00ff88' : a === 'SELL' ? '#ff4444' : '#ffaa00';
           }),
-          tension: 0.3,
-          fill: true,
+          tension: 0.3, fill: true,
         }],
       },
       options: {
-        animation: false,
-        responsive: true,
-        maintainAspectRatio: false,
+        animation: false, responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, tooltip: {
-          backgroundColor: '#13131f',
-          borderColor: '#1e1e30',
-          borderWidth: 1,
+          backgroundColor: '#13131f', borderColor: '#1e1e30', borderWidth: 1,
           titleFont: { family: 'IBM Plex Mono', size: 10 },
           bodyFont: { family: 'IBM Plex Mono', size: 11 },
         }},
@@ -273,32 +397,297 @@ function PriceChart({ symbol, history }) {
     });
     return () => chartRef.current?.destroy();
   }, [history]);
+  return <div className="chart-wrap"><canvas ref={canvasRef} /></div>;
+}
+
+// ── CandleStick ───────────────────────────────────────────────────────────────
+
+function CandleStick({ open, high, low, close, allHigh, allLow }) {
+  const isGreen = close >= open;
+  const color = isGreen ? '#00ff88' : '#ff4444';
+  const W = 28, H = 56;
+  const range = (allHigh - allLow) || 1;
+  const toY = v => H - ((v - allLow) / range) * H;
+  const bodyTop    = Math.min(toY(open), toY(close));
+  const bodyBottom = Math.max(toY(open), toY(close));
+  const bodyH      = Math.max(bodyBottom - bodyTop, 1.5);
+  return (
+    <svg width={W} height={H} style={{ display: 'block', margin: '0 auto' }}>
+      <line x1={W/2} y1={toY(high)} x2={W/2} y2={toY(low)} stroke={color} strokeWidth="1.5" opacity="0.7" />
+      <rect x={5} y={bodyTop} width={W - 10} height={bodyH}
+            fill={isGreen ? 'rgba(0,255,136,0.25)' : 'rgba(255,68,68,0.25)'}
+            stroke={color} strokeWidth="1" rx="1" />
+    </svg>
+  );
+}
+
+// ── KronosForecastChart ───────────────────────────────────────────────────────
+
+function KronosForecastChart({ signals }) {
+  const canvasRef = useRef(null);
+  const chartRef  = useRef(null);
+
+  const kronosSignal = (signals || []).find(s => s.agent_name === 'Kronos');
+  const extra  = kronosSignal?.extra || {};
+  const hist   = extra.historical_ohlcv || [];
+  const path   = extra.predicted_ohlc_path || [];
+  const method = extra.method || '';
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    if (!hist.length && !path.length) return;
+
+    const histLabels = hist.map(h => {
+      const d = new Date(h.date);
+      return `${d.getMonth()+1}/${d.getDate()}`;
+    });
+    const histCloses = hist.map(h => h.close);
+    const histHighs  = hist.map(h => h.high);
+    const histLows   = hist.map(h => h.low);
+
+    const predLabels = path.map(p => `+${p.day}d`);
+    const predCloses = path.map(p => p.close);
+    const predHighs  = path.map(p => p.high);
+    const predLows   = path.map(p => p.low);
+
+    const joinClose  = histCloses.length ? [histCloses[histCloses.length - 1], ...predCloses] : predCloses;
+    const joinHigh   = histHighs.length  ? [histHighs[histHighs.length - 1],   ...predHighs]  : predHighs;
+    const joinLow    = histLows.length   ? [histLows[histLows.length - 1],     ...predLows]   : predLows;
+    const joinLabels = histLabels.length ? ['▶NOW', ...predLabels] : predLabels;
+    const allLabels  = [...histLabels, ...joinLabels];
+    const nullPad    = n => Array(n).fill(null);
+
+    const retPct = extra.median_return_7d_pct;
+    const [fcColor, fcBg, fcBand] = retPct == null
+      ? ['rgba(255,170,0,1)', 'rgba(255,170,0,0.07)', 'rgba(255,170,0,0.15)']
+      : retPct > 0
+        ? ['rgba(0,255,136,1)', 'rgba(0,255,136,0.07)', 'rgba(0,255,136,0.12)']
+        : ['rgba(255,68,68,1)', 'rgba(255,68,68,0.07)', 'rgba(255,68,68,0.12)'];
+
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'line',
+      data: {
+        labels: allLabels,
+        datasets: [
+          {
+            label: 'Hist High',
+            data: [...histHighs, ...nullPad(joinLabels.length)],
+            borderColor: 'rgba(68,136,255,0.0)',
+            backgroundColor: 'rgba(68,136,255,0.07)',
+            borderWidth: 0, pointRadius: 0, tension: 0.2, fill: '+1', order: 10,
+          },
+          {
+            label: 'Hist Close',
+            data: [...histCloses, ...nullPad(joinLabels.length)],
+            borderColor: 'rgba(68,136,255,0.9)',
+            backgroundColor: 'rgba(68,136,255,0.04)',
+            borderWidth: 2, pointRadius: 0, tension: 0.25, fill: '+1', order: 9,
+          },
+          {
+            label: 'Hist Low',
+            data: [...histLows, ...nullPad(joinLabels.length)],
+            borderColor: 'rgba(68,136,255,0.0)',
+            backgroundColor: 'transparent',
+            borderWidth: 0, pointRadius: 0, tension: 0.2, fill: false, order: 11,
+          },
+          {
+            label: 'Forecast High',
+            data: [...nullPad(histLabels.length), ...joinHigh],
+            borderColor: fcBand,
+            backgroundColor: fcBand,
+            borderWidth: 1, borderDash: [3, 4], pointRadius: 0, tension: 0.2,
+            fill: '+1', order: 4,
+          },
+          {
+            label: '7d Forecast',
+            data: [...nullPad(histLabels.length), ...joinClose],
+            borderColor: fcColor,
+            backgroundColor: fcBg,
+            borderWidth: 2.5, borderDash: [6, 3],
+            pointRadius: [0, ...path.map((_, i) => i === path.length - 1 ? 6 : 3)],
+            pointBackgroundColor: fcColor,
+            pointBorderColor: 'var(--bg2)',
+            pointBorderWidth: 1.5,
+            tension: 0.2, fill: false, order: 1,
+          },
+          {
+            label: 'Forecast Low',
+            data: [...nullPad(histLabels.length), ...joinLow],
+            borderColor: fcBand,
+            backgroundColor: 'transparent',
+            borderWidth: 1, borderDash: [3, 4], pointRadius: 0, tension: 0.2,
+            fill: false, order: 5,
+          },
+        ],
+      },
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            display: true,
+            labels: {
+              color: '#8892a4', font: { family: 'IBM Plex Mono', size: 9 },
+              boxWidth: 10, padding: 8,
+              filter: item => ['Hist Close', '7d Forecast'].includes(item.text),
+            },
+          },
+          tooltip: {
+            backgroundColor: '#0f0f18', borderColor: '#1e1e30', borderWidth: 1,
+            titleFont: { family: 'IBM Plex Mono', size: 9 },
+            bodyFont:  { family: 'IBM Plex Mono', size: 10 },
+            callbacks: {
+              label: ctx => ctx.raw != null
+                ? `${ctx.dataset.label}: $${Number(ctx.raw).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+                : null,
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: ctx => allLabels[ctx.index] === '▶NOW' ? '#ffaa00' : '#8892a4',
+              font: { family: 'IBM Plex Mono', size: 8 },
+              maxTicksLimit: 14,
+            },
+            grid: { color: '#1e1e30' },
+          },
+          y: {
+            ticks: {
+              color: '#8892a4', font: { family: 'IBM Plex Mono', size: 9 },
+              callback: v => '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }),
+            },
+            grid: { color: '#1e1e30' },
+          },
+        },
+      },
+    });
+    return () => { chartRef.current?.destroy(); chartRef.current = null; };
+  }, [signals]);
+
+  if (!kronosSignal || (!hist.length && !path.length)) {
+    return (
+      <div className="empty-state" style={{ height: 60, display:'flex', alignItems:'center' }}>
+        No Kronos forecast — run the oracle to generate.
+      </div>
+    );
+  }
+
+  const retPct   = extra.median_return_7d_pct;
+  const bullPct  = extra.bullish_probability != null ? Math.round(extra.bullish_probability * 100) : null;
+  const retClass = retPct == null ? '' : retPct > 0 ? 'pos' : 'neg';
+  const methodTag = method === 'gbm_monte_carlo' ? 'GBM FALLBACK'
+    : method === 'kronos' ? 'KRONOS MODEL' : method.toUpperCase();
+
+  const allPathHighs = path.map(p => p.high);
+  const allPathLows  = path.map(p => p.low);
+  const candleHigh   = Math.max(...allPathHighs);
+  const candleLow    = Math.min(...allPathLows);
 
   return (
-    <div className="chart-wrap">
-      <canvas ref={canvasRef} />
+    <div>
+      {/* Stat bar */}
+      <div className="kronos-stat-bar">
+        {extra.current_close != null && (
+          <div className="kronos-stat-card">
+            <span className="k-label">Current</span>
+            <span className="k-value">${Number(extra.current_close).toLocaleString()}</span>
+          </div>
+        )}
+        {retPct != null && (
+          <div className="kronos-stat-card">
+            <span className="k-label">7d Return</span>
+            <span className={`k-value ${retClass}`}>{retPct > 0 ? '+' : ''}{retPct.toFixed(2)}%</span>
+          </div>
+        )}
+        {bullPct != null && (
+          <div className="kronos-stat-card">
+            <span className="k-label">Bull Prob</span>
+            <span className={`k-value ${bullPct >= 50 ? 'pos' : 'neg'}`}>{bullPct}%</span>
+          </div>
+        )}
+        {extra.predicted_high_7d != null && (
+          <div className="kronos-stat-card">
+            <span className="k-label">Pred High</span>
+            <span className="k-value pos">${Number(extra.predicted_high_7d).toLocaleString()}</span>
+          </div>
+        )}
+        {extra.predicted_low_7d != null && (
+          <div className="kronos-stat-card">
+            <span className="k-label">Pred Low</span>
+            <span className="k-value neg">${Number(extra.predicted_low_7d).toLocaleString()}</span>
+          </div>
+        )}
+        <div className="kronos-stat-card"
+          style={{ borderColor: method === 'kronos' ? 'rgba(170,102,255,0.35)' : 'var(--border)' }}>
+          <span className="k-label">Model</span>
+          <span className="k-value"
+            style={{ color: method === 'kronos' ? 'var(--purple)' : 'var(--slate)', fontSize: 10 }}>
+            {methodTag}
+          </span>
+        </div>
+      </div>
+
+      {/* Chart */}
+      <div className="kronos-chart-wrap"><canvas ref={canvasRef} /></div>
+
+      {/* 7-day candlestick breakdown */}
+      {path.length > 0 && (
+        <div className="forecast-grid">
+          {path.map(day => {
+            const isGreen = day.close >= day.open;
+            const closeColor = isGreen ? 'var(--green)' : 'var(--red)';
+            const cardClass  = `forecast-day-card ${isGreen ? 'bullish' : 'bearish'}`;
+            const fmt = v => (v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v.toFixed(0)}`);
+            return (
+              <div key={day.day} className={cardClass}>
+                <div className="forecast-day-label">+{day.day}d</div>
+                <CandleStick
+                  open={day.open} high={day.high} low={day.low} close={day.close}
+                  allHigh={candleHigh} allLow={candleLow}
+                />
+                <div className="forecast-day-close" style={{ color: closeColor }}>
+                  {fmt(day.close)}
+                </div>
+                <div className="forecast-day-ohlc">
+                  <div>H {fmt(day.high)}</div>
+                  <div>L {fmt(day.low)}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-// ── History table ─────────────────────────────────────────────────────────────
+// ── HistoryTable ──────────────────────────────────────────────────────────────
 
-function HistoryTable({ history }) {
+function HistoryTable({ history, isStock }) {
   const [expanded, setExpanded] = useState(null);
   if (!history.length) return <div className="empty-state">No history yet. Run the oracle to populate.</div>;
   return (
     <table>
       <thead>
-        <tr><th>Time</th><th>Action</th><th>Conf</th><th>Top Signal</th><th>Reasoning</th></tr>
+        <tr>
+          <th>Time</th>
+          <th>{isStock ? 'Direction' : 'Action'}</th>
+          <th>Conf</th><th>Top Agent</th><th>Reasoning</th>
+        </tr>
       </thead>
       <tbody>
         {history.slice(0, 20).map((rec, i) => {
           const top = (rec.agent_signals || []).sort((a,b) => b.confidence - a.confidence)[0];
           const isExp = expanded === i;
+          const label = isStock
+            ? (rec.action === 'BUY' ? 'LONG' : rec.action === 'SELL' ? 'SHORT' : 'HOLD')
+            : rec.action;
           return (
             <tr key={i} className={`row-${rec.action}`}>
               <td>{fmtTs(rec.timestamp)}</td>
-              <td style={{ fontWeight: 600 }}>{rec.action}</td>
+              <td style={{ fontWeight: 600 }}>{label}</td>
               <td>{Math.round((rec.confidence || 0) * 100)}%</td>
               <td>{top ? `${AGENT_EMOJI[top.agent_name] || ''} ${top.agent_name} ${top.signal}` : '—'}</td>
               <td>
@@ -315,77 +704,490 @@ function HistoryTable({ history }) {
   );
 }
 
-// ── Portfolio sidebar ─────────────────────────────────────────────────────────
+// ── AutoTradePanel ────────────────────────────────────────────────────────────
 
-function Portfolio() {
-  const [summary, setSummary] = useState(null);
-  const [positions, setPositions] = useState([]);
-  const [loading, setLoading] = useState(false);
+function AutoTradePanel() {
+  const [settings, setSettings] = useState({ enabled: false, amount_usd: 100, confidence_threshold: 0.70 });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { api.get('/api/settings/auto-trade').then(s => setSettings(s)).catch(() => {}); }, []);
+  const save = async (patch) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    setSaving(true);
+    try { await api.post('/api/settings/auto-trade', next); }
+    catch {} finally { setSaving(false); }
+  };
+  return (
+    <div>
+      <div className="auto-trade-row">
+        <div className="toggle-wrap">
+          <label className="toggle">
+            <input type="checkbox" checked={settings.enabled} onChange={e => save({ enabled: e.target.checked })} />
+            <span className="toggle-slider" />
+          </label>
+          <span className="toggle-label">Auto-Trade</span>
+        </div>
+        <span className={`auto-status ${settings.enabled ? 'on' : 'off'}`}>{settings.enabled ? 'ON' : 'OFF'}</span>
+      </div>
+      {settings.enabled && (
+        <div style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)', marginBottom: 8 }}>
+          Crypto + stocks auto-trade on high-confidence signals
+        </div>
+      )}
+      <div className="setting-row">
+        <span className="setting-label">Amount / trade</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)' }}>$</span>
+          <input className="setting-input" type="number" min="10" max="500" step="10"
+            value={settings.amount_usd}
+            onChange={e => setSettings(s => ({ ...s, amount_usd: parseFloat(e.target.value) || s.amount_usd }))}
+            onBlur={e => save({ amount_usd: parseFloat(e.target.value) || settings.amount_usd })}
+          />
+        </div>
+      </div>
+      <div className="setting-row">
+        <span className="setting-label">Min confidence</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input className="setting-input" type="number" min="50" max="99" step="5"
+            value={Math.round(settings.confidence_threshold * 100)}
+            onChange={e => setSettings(s => ({ ...s, confidence_threshold: (parseFloat(e.target.value) || 70) / 100 }))}
+            onBlur={e => save({ confidence_threshold: (parseFloat(e.target.value) || 70) / 100 })}
+          />
+          <span style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)' }}>%</span>
+        </div>
+      </div>
+      {saving && <div style={{ fontSize: 9, color: 'var(--slate)', fontFamily: 'var(--mono)' }}>saving…</div>}
+    </div>
+  );
+}
+
+// ── PerformanceStats ──────────────────────────────────────────────────────────
+
+function PerformanceStats({ url, label, refreshKey }) {
+  const [stats, setStats] = useState(null);
+  useEffect(() => { api.get(url).then(setStats).catch(() => {}); }, [url, refreshKey]);
+  if (!stats) return <div className="loading">Loading…</div>;
+  const pnlClass = stats.total_pnl > 0 ? 'pos' : stats.total_pnl < 0 ? 'neg' : 'neutral';
+  return (
+    <>
+      {label && <div style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)', marginBottom: 6 }}>{label}</div>}
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className={`stat-val ${pnlClass}`}>{stats.total_pnl >= 0 ? '+' : ''}${fmt(stats.total_pnl)}</div>
+          <div className="stat-lbl">P&amp;L</div>
+        </div>
+        <div className="stat-card">
+          <div className={`stat-val ${stats.win_rate >= 50 ? 'pos' : 'neg'}`}>{stats.win_rate}%</div>
+          <div className="stat-lbl">Win Rate</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-val neutral">{stats.closed}</div>
+          <div className="stat-lbl">Closed</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-val neutral">{stats.open_count}</div>
+          <div className="stat-lbl">Open</div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── TradeHistory ──────────────────────────────────────────────────────────────
+
+function TradeHistory({ symbol, refreshKey }) {
+  const [trades, setTrades] = useState([]);
+  useEffect(() => {
+    const url = symbol ? `/api/trades?symbol=${symbol}&limit=30` : '/api/trades?limit=30';
+    api.get(url).then(setTrades).catch(() => setTrades([]));
+  }, [symbol, refreshKey]);
+  if (!trades.length) return <div className="empty-state">No crypto trades yet.</div>;
+  return (
+    <table>
+      <thead><tr><th>Time</th><th>Sym</th><th>Entry $</th><th>Exit $</th><th>Qty</th><th>P&L</th><th>Src</th></tr></thead>
+      <tbody>
+        {trades.map(t => {
+          const isOpen = t.status === 'open';
+          const pnlClass = !isOpen && t.realized_pnl != null ? (t.realized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg') : 'trade-status-open';
+          return (
+            <tr key={t.id}>
+              <td>{fmtTs(t.created_at)}</td>
+              <td style={{ fontWeight: 600 }}>{t.symbol}</td>
+              <td>${fmt(t.entry_price, 2)}</td>
+              <td>{isOpen ? <span className="trade-status-open">OPEN</span> : `$${fmt(t.exit_price, 2)}`}</td>
+              <td>{t.quantity != null ? Number(t.quantity).toFixed(5) : '—'}</td>
+              <td>{isOpen ? <span className="trade-status-open">—</span>
+                : <span className={pnlClass}>{t.realized_pnl >= 0 ? '+' : ''}${fmt(t.realized_pnl)}</span>}</td>
+              <td><span className={t.triggered_by === 'auto' ? 'badge-auto' : 'badge-manual'}>{t.triggered_by}</span></td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ── StockTradeHistory ─────────────────────────────────────────────────────────
+
+function StockTradeHistory({ symbol, refreshKey }) {
+  const [trades, setTrades] = useState([]);
+  useEffect(() => {
+    const url = symbol ? `/api/stocks/trades?symbol=${symbol}&limit=30` : '/api/stocks/trades?limit=30';
+    api.get(url).then(setTrades).catch(() => setTrades([]));
+  }, [symbol, refreshKey]);
+  if (!trades.length) return <div className="empty-state">No stock trades yet. Use LONG/SHORT buttons or enable auto-trade.</div>;
+  return (
+    <table>
+      <thead><tr><th>Time</th><th>Sym</th><th>Type</th><th>Entry $</th><th>Exit $</th><th>P&L</th><th>Src</th></tr></thead>
+      <tbody>
+        {trades.map(t => {
+          const isOpen = t.status === 'open';
+          const pnlClass = !isOpen && t.realized_pnl != null ? (t.realized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg') : 'trade-status-open';
+          const typeBadge = t.trade_type === 'long' ? 'badge-long' : 'badge-short';
+          return (
+            <tr key={t.id}>
+              <td>{fmtTs(t.created_at)}</td>
+              <td style={{ fontWeight: 600 }}>{t.symbol}</td>
+              <td><span className={typeBadge}>{(t.trade_type || 'long').toUpperCase()}</span></td>
+              <td>${fmt(t.entry_price, 2)}</td>
+              <td>{isOpen ? <span className="trade-status-open">OPEN</span> : `$${fmt(t.exit_price, 2)}`}</td>
+              <td>{isOpen ? <span className="trade-status-open">—</span>
+                : <span className={pnlClass}>{t.realized_pnl >= 0 ? '+' : ''}${fmt(t.realized_pnl)}</span>}</td>
+              <td><span className={t.triggered_by === 'auto' ? 'badge-auto' : 'badge-manual'}>{t.triggered_by}</span></td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ── TradeModal (crypto BUY/SELL) ──────────────────────────────────────────────
+
+function TradeModal({ symbol, side, onClose, onDone }) {
+  const [step, setStep] = useState('input');
+  const [amount, setAmount] = useState('100');
+  const [orderId, setOrderId] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const sideClass = side;
+  const color = side === 'buy' ? 'var(--green)' : 'var(--red)';
 
-  const load = useCallback(async () => {
-    setLoading(true); setErr('');
+  const submitOrder = async () => {
+    setErr(''); setBusy(true);
     try {
-      const [s, p] = await Promise.all([
-        api.get('/api/portfolio'),
-        api.get('/api/portfolio/crypto'),
-      ]);
-      setSummary(s); setPositions(p);
-    } catch (e) {
-      setErr('Portfolio unavailable');
-    } finally { setLoading(false); }
-  }, []);
+      const data = await api.post('/api/order', { symbol, side, amount_usd: parseFloat(amount) });
+      setOrderId(data.order_id); setStep('confirm');
+    } catch(e) { setErr(e?.detail || 'Order failed'); }
+    finally { setBusy(false); }
+  };
 
-  useEffect(() => { load(); }, []);
+  const confirmOrder = async () => {
+    setErr(''); setBusy(true);
+    try {
+      await api.post(`/api/order/confirm/${orderId}`);
+      setStep('done'); onDone && onDone();
+    } catch(e) { setErr(e?.detail || 'Confirmation failed'); }
+    finally { setBusy(false); }
+  };
+
+  const cancelOrder = async () => {
+    if (orderId) try { await api.del(`/api/order/${orderId}`); } catch {}
+    onClose();
+  };
 
   return (
-    <div className="sidebar">
-      <div className="panel-title">Portfolio</div>
-      {loading && <div className="loading">Loading…</div>}
-      {err && <div className="error-msg">{err}</div>}
-      {summary && !err && (
-        <>
-          <div className="portfolio-total">${fmt(summary.portfolio_value)}</div>
-          <div className="portfolio-label">
-            {summary.paper_trading ? 'Paper account' : 'Live account'} · Equity ${fmt(summary.equity)}
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && cancelOrder()}>
+      <div className="modal">
+        {step === 'input' && (<>
+          <div className={`modal-title ${sideClass}`}>{side.toUpperCase()} {symbol}</div>
+          <div className="modal-label">Amount (USD)</div>
+          <input className="modal-input" type="number" min="1" max="500" step="10"
+            value={amount} onChange={e => setAmount(e.target.value)} autoFocus />
+          <div style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)', marginTop: -10, marginBottom: 14 }}>
+            Max $500 per order · paper trading
           </div>
-          <div style={{ fontSize: 11, color: 'var(--slate)', marginBottom: 10 }}>
-            Cash ${fmt(summary.cash)} · Crypto ${fmt(summary.crypto_value)}
+          {err && <div className="modal-err">{err}</div>}
+          <div className="modal-row">
+            <button className="modal-btn modal-btn-cancel" onClick={cancelOrder}>Cancel</button>
+            <button className={`modal-btn modal-btn-confirm ${sideClass}`} onClick={submitOrder}
+              disabled={busy || !amount || parseFloat(amount) <= 0}>{busy ? 'Placing…' : 'Preview'}</button>
           </div>
-          {positions.map(p => (
-            <div key={p.symbol} className="position-row">
-              <div>
-                <div className="pos-sym">{p.symbol}</div>
-                <div style={{ fontSize: 10, color: 'var(--slate)' }}>{p.quantity} @ ${fmt(p.average_entry_price, 4)}</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div className="pos-val">${fmt(p.market_value)}</div>
-                <div className={`pos-pl ${p.unrealized_pl_pct >= 0 ? 'up' : 'dn'}`}>
-                  {p.unrealized_pl_pct >= 0 ? '+' : ''}{fmt(p.unrealized_pl_pct)}%
-                </div>
-              </div>
-            </div>
-          ))}
-          {!positions.length && <div className="empty-state">No open crypto positions.</div>}
-        </>
-      )}
-      <button className="refresh-btn" onClick={load} disabled={loading}>↻ Refresh</button>
-      <div className="warning-banner">
-        Trading suggestions are informational only. Always verify before executing.
+        </>)}
+        {step === 'confirm' && (<>
+          <div className={`modal-title ${sideClass}`}>Confirm Order</div>
+          <div className="modal-confirm-detail" style={{ color }}>{side.toUpperCase()} {symbol} · ${parseFloat(amount).toFixed(2)}</div>
+          <div className="modal-confirm-text">Market {side} on Alpaca paper account. ID: <span style={{ fontFamily: 'var(--mono)', color: 'var(--slate)' }}>{orderId}</span></div>
+          {err && <div className="modal-err">{err}</div>}
+          <div className="modal-row">
+            <button className="modal-btn modal-btn-cancel" onClick={cancelOrder} disabled={busy}>Cancel</button>
+            <button className={`modal-btn modal-btn-confirm ${sideClass}`} onClick={confirmOrder}
+              disabled={busy}>{busy ? 'Executing…' : `Execute ${side.toUpperCase()}`}</button>
+          </div>
+        </>)}
+        {step === 'done' && (<>
+          <div className={`modal-title ${sideClass}`}>Order Submitted</div>
+          <div className="modal-success">✓ {side.toUpperCase()} {symbol} ${parseFloat(amount).toFixed(2)} submitted.</div>
+          <div style={{ fontSize: 11, color: 'var(--slate)', fontFamily: 'var(--mono)', marginTop: 8, marginBottom: 16 }}>⚠️ Paper trading — not real money.</div>
+          <button className="modal-btn modal-btn-cancel" onClick={onClose} style={{ width: '100%' }}>Close</button>
+        </>)}
       </div>
     </div>
   );
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
+// ── StockTradeModal (LONG / SHORT / COVER) ────────────────────────────────────
+
+function StockTradeModal({ symbol, action, onClose, onDone }) {
+  // action: 'long' | 'short' | 'cover'
+  const [step, setStep] = useState('input');
+  const [amount, setAmount] = useState('200');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const isCover = action === 'cover';
+
+  const execute = async () => {
+    setErr(''); setBusy(true);
+    try {
+      if (isCover) {
+        await api.post(`/api/stocks/close/${symbol}`);
+      } else {
+        await api.post('/api/stocks/order', {
+          symbol,
+          side: action === 'long' ? 'buy' : 'sell',
+          amount_usd: parseFloat(amount),
+        });
+      }
+      setStep('done'); onDone && onDone();
+    } catch(e) {
+      setErr(e?.detail || 'Order failed. Market may be closed or check position.');
+    } finally { setBusy(false); }
+  };
+
+  const colorMap = { long: 'var(--green)', short: 'var(--red)', cover: 'var(--amber)' };
+  const color = colorMap[action] || 'var(--text)';
+
+  const labelMap = {
+    long: `LONG (Buy) ${symbol}`,
+    short: `SHORT (Sell) ${symbol}`,
+    cover: `COVER/CLOSE ${symbol}`,
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        {step === 'input' && (<>
+          <div className={`modal-title ${action}`}>{labelMap[action]}</div>
+          {isCover ? (
+            <div className="modal-confirm-text">
+              Close your entire {symbol} position. Calculates realized P&amp;L automatically.
+              <br/><span style={{ color: 'var(--amber)' }}>Market must be open to execute.</span>
+            </div>
+          ) : (<>
+            <div className="modal-label">Amount (USD)</div>
+            <input className="modal-input" type="number" min="1" max="500" step="10"
+              value={amount} onChange={e => setAmount(e.target.value)} autoFocus />
+            <div style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)', marginTop: -10, marginBottom: 10 }}>
+              {action === 'long' ? 'Buy shares — profit on price rise' : 'Short sell — profit on price fall'}
+              <br/>Max $500 · paper trading · market must be open
+            </div>
+          </>)}
+          {err && <div className="modal-err">{err}</div>}
+          <div className="modal-row">
+            <button className="modal-btn modal-btn-cancel" onClick={onClose}>Cancel</button>
+            <button className={`modal-btn modal-btn-confirm ${action}`} onClick={execute}
+              disabled={busy || (!isCover && (!amount || parseFloat(amount) <= 0))}>
+              {busy ? 'Executing…' : (isCover ? 'Cover Position' : `${action === 'long' ? '▲ GO LONG' : '▼ GO SHORT'}`)}
+            </button>
+          </div>
+        </>)}
+        {step === 'done' && (<>
+          <div className={`modal-title ${action}`}>
+            {isCover ? 'Position Closed' : action === 'long' ? 'Long Order Submitted' : 'Short Order Submitted'}
+          </div>
+          <div className="modal-success">
+            ✓ {isCover ? `${symbol} position closed.` : `${action === 'long' ? 'LONG' : 'SHORT'} ${symbol} $${parseFloat(amount).toFixed(2)} submitted.`}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--slate)', fontFamily: 'var(--mono)', marginTop: 8, marginBottom: 16 }}>⚠️ Paper trading — not real money.</div>
+          <button className="modal-btn modal-btn-cancel" onClick={onClose} style={{ width: '100%' }}>Close</button>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+// ── QuickTradeButtons ─────────────────────────────────────────────────────────
+
+function QuickTradeButtons({ symbol, isStock, onDone }) {
+  const [modal, setModal] = useState(null);
+  const handleDone = () => { setModal(null); onDone && onDone(); };
+
+  if (isStock) {
+    return (<>
+      <div className="trade-btns">
+        <button className="trade-btn trade-btn-long"  onClick={() => setModal('long')}>▲ LONG {symbol}</button>
+        <button className="trade-btn trade-btn-short" onClick={() => setModal('short')}>▼ SHORT {symbol}</button>
+        <button className="trade-btn trade-btn-cover" onClick={() => setModal('cover')}>✕ COVER</button>
+      </div>
+      {modal && <StockTradeModal symbol={symbol} action={modal} onClose={() => setModal(null)} onDone={handleDone} />}
+    </>);
+  }
+
+  return (<>
+    <div className="trade-btns">
+      <button className="trade-btn trade-btn-buy"  onClick={() => setModal('buy')}>▲ BUY {symbol}</button>
+      <button className="trade-btn trade-btn-sell" onClick={() => setModal('sell')}>▼ SELL {symbol}</button>
+    </div>
+    {modal && <TradeModal symbol={symbol} side={modal} onClose={() => setModal(null)} onDone={handleDone} />}
+  </>);
+}
+
+// ── Portfolio sidebar ─────────────────────────────────────────────────────────
+
+function Portfolio({ tradeRefreshKey }) {
+  const [summary, setSummary] = useState(null);
+  const [cryptoPos, setCryptoPos] = useState([]);
+  const [stockPos, setStockPos] = useState([]);
+  const [coverModal, setCoverModal] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [tick, setTick] = useState(0);
+
+  // Auto-refresh positions and performance every 60 seconds
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr('');
+    try {
+      const [s, cp, sp] = await Promise.all([
+        api.get('/api/portfolio'),
+        api.get('/api/portfolio/crypto'),
+        api.get('/api/stocks/positions'),
+      ]);
+      setSummary(s); setCryptoPos(cp); setStockPos(sp);
+    } catch { setErr('Portfolio unavailable'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [tradeRefreshKey, tick]);
+
+  return (
+    <div className="sidebar">
+      <div className="panel-title">Auto Trade</div>
+      <AutoTradePanel />
+
+      <hr className="section-divider" />
+
+      <div className="panel-title">Crypto Performance</div>
+      <PerformanceStats url="/api/trades/stats" refreshKey={tick} />
+
+      <div style={{ marginTop: 8 }} />
+      <div className="panel-title">Stock Performance</div>
+      <PerformanceStats url="/api/stocks/trades/stats" refreshKey={tick} />
+
+      <hr className="section-divider" />
+
+      <div className="panel-title">Positions</div>
+      {loading && <div className="loading">Loading…</div>}
+      {err && <div className="error-msg">{err}</div>}
+      {summary && !err && (<>
+        <div className="portfolio-total">${fmt(summary.portfolio_value)}</div>
+        <div className="portfolio-label">
+          {summary.paper_trading ? 'Paper' : 'Live'} · Cash ${fmt(summary.cash)}
+        </div>
+
+        {/* Crypto positions */}
+        {cryptoPos.length > 0 && (
+          <div style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)', marginBottom: 6, marginTop: 4 }}>CRYPTO</div>
+        )}
+        {cryptoPos.map(p => (
+          <div key={p.symbol} className="position-row">
+            <div>
+              <div className="pos-sym">{p.symbol}</div>
+              <div style={{ fontSize: 10, color: 'var(--slate)' }}>{p.quantity} coins</div>
+              <div style={{ fontSize: 10, color: 'var(--slate)' }}>entry ${fmt(p.average_entry_price, 2)}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div className="pos-val">${fmt(p.market_value)}</div>
+              <div className={`pos-pl ${p.unrealized_pl_pct >= 0 ? 'up' : 'dn'}`}>
+                {p.unrealized_pl_pct >= 0 ? '+' : ''}{fmt(p.unrealized_pl_pct)}%
+              </div>
+              <div className={`pos-pl ${p.unrealized_pl >= 0 ? 'up' : 'dn'}`}>
+                {p.unrealized_pl >= 0 ? '+' : ''}${fmt(p.unrealized_pl)}
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* Stock positions */}
+        {stockPos.length > 0 && (
+          <div style={{ fontSize: 10, color: 'var(--slate)', fontFamily: 'var(--mono)', marginBottom: 6, marginTop: 8 }}>STOCKS</div>
+        )}
+        {stockPos.map(p => (
+          <div key={p.symbol} className="position-row">
+            <div>
+              <div className="pos-sym" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {p.symbol}
+                <span className={`pos-badge ${p.side}`}>{(p.side || 'long').toUpperCase()}</span>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--slate)' }}>{fmt(p.quantity, 4)} shares</div>
+              <div style={{ fontSize: 10, color: 'var(--slate)' }}>entry ${fmt(p.average_entry_price, 2)}</div>
+              <button className="cover-btn" onClick={() => setCoverModal(p.symbol)}>✕ Cover</button>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div className="pos-val">${fmt(p.market_value)}</div>
+              <div className={`pos-pl ${p.unrealized_pl >= 0 ? 'up' : 'dn'}`}>
+                {p.unrealized_pl >= 0 ? '+' : ''}${fmt(p.unrealized_pl)}
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {!cryptoPos.length && !stockPos.length && (
+          <div className="empty-state">No open positions.</div>
+        )}
+      </>)}
+
+      <button className="refresh-btn" onClick={load} disabled={loading}>↻ Refresh</button>
+      <div className="warning-banner">⚠️ Paper trading account.<br/>Not real money.</div>
+
+      {coverModal && (
+        <StockTradeModal symbol={coverModal} action="cover"
+          onClose={() => setCoverModal(null)}
+          onDone={() => { setCoverModal(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Toasts ────────────────────────────────────────────────────────────────────
 
 function Toasts({ toasts }) {
   return (
     <div className="toast-container">
       {toasts.map(t => (
-        <div key={t.id} className={`toast ${t.action}`}>
-          <b>{t.symbol} {t.action}</b> · {Math.round(t.confidence * 100)}% confidence
-          <div style={{ fontSize: 10, color: 'var(--slate)', marginTop: 2 }}>New oracle signal received</div>
+        <div key={t.id} className={`toast ${t.toastClass || t.action}`}>
+          {t.isTradeToast ? (<>
+            <b>{t.tradeLabel || ('🤖 AUTO ' + t.action)}: {t.symbol}</b>
+            {t.pnl != null
+              ? <span style={{ color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)', marginLeft: 6 }}>
+                  P&L {t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}
+                </span>
+              : null}
+            <div style={{ fontSize: 10, color: 'var(--slate)', marginTop: 2 }}>
+              {t.isStock ? 'Stock auto-trade executed' : 'Auto-trade executed'}
+            </div>
+          </>) : (<>
+            <b>{t.symbol} {t.displayAction || t.action}</b> · {Math.round((t.confidence || 0) * 100)}% confidence
+            <div style={{ fontSize: 10, color: 'var(--slate)', marginTop: 2 }}>
+              {t.isStock ? 'Stock oracle signal' : 'New oracle signal'}
+            </div>
+          </>)}
         </div>
       ))}
     </div>
@@ -395,17 +1197,23 @@ function Toasts({ toasts }) {
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 function App() {
-  const [symbols, setSymbols] = useState(['BTC']);
+  const [cryptoSymbols, setCryptoSymbols] = useState(['BTC']);
+  const [stockSymbols, setStockSymbols] = useState([]);
   const [activeSymbol, setActiveSymbol] = useState('BTC');
-  const [recs, setRecs] = useState({});        // keyed by symbol
+  const [recs, setRecs] = useState({});
   const [history, setHistory] = useState([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [clock, setClock] = useState('');
   const [running, setRunning] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [historyTab, setHistoryTab] = useState('signals');
+  const [tradeRefreshKey, setTradeRefreshKey] = useState(0);
+  const [marketOpen, setMarketOpen] = useState(null);
 
   const wsRef = useRef(null);
   const toastTimers = useRef({});
+
+  const isStock = stockSymbols.includes(activeSymbol);
 
   // Clock
   useEffect(() => {
@@ -415,13 +1223,27 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Load watchlist + initial data
+  // Market hours (poll every 60s)
+  useEffect(() => {
+    const check = () => api.get('/api/stocks/market-open').then(d => setMarketOpen(d.is_open)).catch(() => {});
+    check();
+    const id = setInterval(check, 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Load watchlists + recommendations
   useEffect(() => {
     (async () => {
       try {
-        const wl = await api.get('/api/watchlist');
-        if (wl.length) { setSymbols(wl); setActiveSymbol(wl[0]); }
-        const allRecs = await api.get('/api/recommendations');
+        const [wl, swl, allRecs] = await Promise.all([
+          api.get('/api/watchlist'),
+          api.get('/api/stocks/watchlist'),
+          api.get('/api/recommendations'),
+        ]);
+        if (wl.length) setCryptoSymbols(wl);
+        if (swl.length) setStockSymbols(swl);
+        if (wl.length) setActiveSymbol(wl[0]);
+
         const bySymbol = {};
         allRecs.forEach(r => { bySymbol[r.symbol] = r; });
         setRecs(bySymbol);
@@ -429,7 +1251,7 @@ function App() {
     })();
   }, []);
 
-  // Load history for active symbol
+  // History for active symbol
   useEffect(() => {
     (async () => {
       try {
@@ -442,28 +1264,51 @@ function App() {
   // WebSocket
   useEffect(() => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/ws/feed`;
-
     const connect = () => {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(`${proto}://${location.host}${API_BASE}/ws/feed`);
       wsRef.current = ws;
-
       ws.onopen = () => setWsConnected(true);
       ws.onclose = () => { setWsConnected(false); setTimeout(connect, 3000); };
       ws.onerror = () => ws.close();
-
       ws.onmessage = e => {
         try {
           const msg = JSON.parse(e.data);
-          if (msg.type === 'recommendation') {
+
+          if (msg.type === 'recommendation' || msg.type === 'stock_recommendation') {
             const rec = msg.data;
+            const isStockRec = msg.type === 'stock_recommendation';
             setRecs(prev => ({ ...prev, [rec.symbol]: rec }));
-            // Add toast
             const id = Date.now();
-            setToasts(prev => [...prev, { ...rec, id }]);
+            const displayAction = isStockRec
+              ? (rec.action === 'BUY' ? 'LONG' : rec.action === 'SELL' ? 'SHORT' : 'HOLD')
+              : rec.action;
+            setToasts(prev => [...prev, {
+              ...rec, id, isStock: isStockRec, displayAction,
+              toastClass: rec.action,
+            }]);
             toastTimers.current[id] = setTimeout(() => {
               setToasts(prev => prev.filter(t => t.id !== id));
             }, 5000);
+          }
+
+          if (msg.type === 'trade' || msg.type === 'stock_trade') {
+            setTradeRefreshKey(k => k + 1);
+            const t = msg.data;
+            const isStockT = msg.type === 'stock_trade';
+            const id = Date.now();
+            const tradeType = t.trade_type || '';
+            const tradeLabel = isStockT
+              ? `${tradeType === 'long' ? '🟢 AUTO LONG' : tradeType === 'short' ? '🔴 AUTO SHORT' : '⚪ AUTO CLOSE'}: ${t.symbol}`
+              : null;
+            setToasts(prev => [...prev, {
+              id, symbol: t.symbol, action: t.action,
+              confidence: 0, isTradeToast: true, isStock: isStockT,
+              tradeLabel, pnl: t.realized_pnl,
+              toastClass: t.action === 'BUY' ? 'BUY' : t.action === 'SELL' ? 'SELL' : 'HOLD',
+            }]);
+            toastTimers.current[id] = setTimeout(() => {
+              setToasts(prev => prev.filter(x => x.id !== id));
+            }, 6000);
           }
         } catch {}
       };
@@ -474,24 +1319,38 @@ function App() {
 
   const triggerRun = async () => {
     setRunning(true);
-    try { await api.post(`/api/run/${activeSymbol}`); }
-    catch {}
+    try {
+      if (isStock) await api.post(`/api/stocks/run/${activeSymbol}`);
+      else         await api.post(`/api/run/${activeSymbol}`);
+    } catch {}
     finally { setTimeout(() => setRunning(false), 3000); }
   };
 
   const rec = recs[activeSymbol];
   const signals = rec?.agent_signals || [];
 
+  // Derive display labels for stocks (BUY→LONG, SELL→SHORT)
+  const displayAction = isStock && rec
+    ? (rec.action === 'BUY' ? 'LONG' : rec.action === 'SELL' ? 'SHORT' : 'HOLD')
+    : rec?.action;
+
+  const runBtnClass = isStock ? 'run-btn stock-run' : 'run-btn';
+  const runLabel = running ? '⟳ RUNNING…' : isStock ? '▶ RUN STOCKS' : '▶ RUN ORACLE';
+
   return (
     <div className="app">
       {/* Header */}
       <div className="header">
         <div className="logo">CRYPTO ORACLE</div>
+        {/* Market hours pill */}
+        {marketOpen !== null && (
+          <span className={`market-pill ${marketOpen ? 'open' : 'closed'}`}>
+            {marketOpen ? '● MARKET OPEN' : '○ MARKET CLOSED'}
+          </span>
+        )}
         <div className="clock">{clock}</div>
         <div className={`ws-dot ${wsConnected ? 'connected' : ''}`} title={wsConnected ? 'Live' : 'Disconnected'} />
-        <button className="run-btn" onClick={triggerRun} disabled={running}>
-          {running ? '⟳ RUNNING…' : '▶ RUN ORACLE'}
-        </button>
+        <button className={runBtnClass} onClick={triggerRun} disabled={running}>{runLabel}</button>
       </div>
 
       {/* Main grid */}
@@ -499,17 +1358,37 @@ function App() {
 
         {/* Master recommendation */}
         <div className="panel master">
+          {/* Symbol tabs */}
           <div className="symbol-tab">
-            {symbols.map(s => (
-              <button key={s} className={`tab ${s === activeSymbol ? 'active' : ''}`} onClick={() => setActiveSymbol(s)}>{s}</button>
+            <span className="tab-section-label">CRYPTO</span>
+            {cryptoSymbols.map(s => (
+              <button key={s} className={`tab crypto-tab ${s === activeSymbol ? 'active-crypto' : ''}`}
+                onClick={() => setActiveSymbol(s)}>{s}</button>
             ))}
+            {stockSymbols.length > 0 && (<>
+              <div className="tab-divider" />
+              <span className="tab-section-label">STOCKS</span>
+              {stockSymbols.map(s => (
+                <button key={s} className={`tab stock-tab ${s === activeSymbol ? 'active-stock' : ''}`}
+                  onClick={() => setActiveSymbol(s)}>{s}</button>
+              ))}
+            </>)}
           </div>
-          <div className="panel-title">Master Recommendation</div>
+
+          <div className="panel-title">
+            {isStock ? `Stock Signal — ${activeSymbol}` : 'Master Recommendation'}
+          </div>
+
           {rec ? (
             <div className="master-inner">
               <ConfidenceRing value={rec.confidence} action={rec.action} />
               <div className="meta-col">
-                <div className={`action-display action-${rec.action}`}>{rec.action}</div>
+                <div className={`action-display action-${rec.action}`}>{displayAction}</div>
+                {isStock && (
+                  <div className="action-label">
+                    {rec.action === 'BUY' ? 'go long — buy shares' : rec.action === 'SELL' ? 'go short — sell short' : 'stay flat'}
+                  </div>
+                )}
                 <div className="reasoning">{rec.reasoning}</div>
                 {rec.key_catalysts?.length > 0 && (
                   <ul className="bullet-list green">
@@ -525,16 +1404,22 @@ function App() {
                   <div className="pos-size">💼 {rec.suggested_position_size}</div>
                 )}
                 <div className="timestamp">Updated: {fmtTs(rec.timestamp)}</div>
+                <QuickTradeButtons symbol={activeSymbol} isStock={isStock}
+                  onDone={() => setTradeRefreshKey(k => k + 1)} />
               </div>
             </div>
           ) : (
-            <div className="empty-state">No recommendation yet — click ▶ RUN ORACLE</div>
+            <div className="empty-state">
+              No {isStock ? 'stock' : 'crypto'} signal yet — click {isStock ? '▶ RUN STOCKS' : '▶ RUN ORACLE'}
+              <QuickTradeButtons symbol={activeSymbol} isStock={isStock}
+                onDone={() => setTradeRefreshKey(k => k + 1)} />
+            </div>
           )}
         </div>
 
-        {/* Agent signal grid */}
+        {/* Agent signals */}
         <div className="panel agents">
-          <div className="panel-title">Agent Signals</div>
+          <div className="panel-title">Agent Signals — {activeSymbol}</div>
           {signals.length > 0 ? (
             <div className="agent-grid">
               {signals.map(s => <AgentCard key={s.agent_name} signal={s} />)}
@@ -544,23 +1429,49 @@ function App() {
           )}
         </div>
 
-        {/* Price / confidence chart */}
+        {/* Chart */}
         <div className="panel chart-panel">
           <div className="panel-title">Confidence History — {activeSymbol}</div>
           <PriceChart symbol={activeSymbol} history={history.slice().reverse()} />
         </div>
 
-        {/* History table */}
+        {/* Kronos Forecast */}
+        {!isStock && (
+          <div className="panel kronos-panel">
+            <div className="panel-title">⚡ Kronos OHLCV Forecast — {activeSymbol}</div>
+            <KronosForecastChart signals={signals} />
+          </div>
+        )}
+
+        {/* History / Trades tabs */}
         <div className="panel history">
-          <div className="panel-title">Recommendation History — {activeSymbol}</div>
-          <HistoryTable history={history} />
+          <div className="tab-bar">
+            <button className={`tab-btn ${historyTab === 'signals' ? 'active' : ''}`}
+              onClick={() => setHistoryTab('signals')}>Oracle Signals</button>
+            <button className={`tab-btn ${historyTab === 'crypto_trades' ? 'active' : ''}`}
+              onClick={() => setHistoryTab('crypto_trades')}>Crypto Trades</button>
+            <button className={`tab-btn ${historyTab === 'stock_trades' ? 'active-blue' : ''}`}
+              onClick={() => setHistoryTab('stock_trades')}>Stock Trades</button>
+          </div>
+          {historyTab === 'signals' && <HistoryTable history={history} isStock={isStock} />}
+          {historyTab === 'crypto_trades' && (
+            <TradeHistory
+              symbol={cryptoSymbols.includes(activeSymbol) ? activeSymbol : null}
+              refreshKey={tradeRefreshKey}
+            />
+          )}
+          {historyTab === 'stock_trades' && (
+            <StockTradeHistory
+              symbol={stockSymbols.includes(activeSymbol) ? activeSymbol : null}
+              refreshKey={tradeRefreshKey}
+            />
+          )}
         </div>
 
-        {/* Portfolio sidebar */}
-        <Portfolio />
+        {/* Sidebar */}
+        <Portfolio tradeRefreshKey={tradeRefreshKey} />
       </div>
 
-      {/* Toasts */}
       <Toasts toasts={toasts} />
     </div>
   );

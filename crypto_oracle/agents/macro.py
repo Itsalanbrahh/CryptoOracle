@@ -31,27 +31,39 @@ class MacroAgent(BaseAgent):
         return {"headlines": headlines, "fear_greed": fear_greed, "symbol": symbol}
 
     async def _fetch_headlines(self) -> list[str]:
-        """Fetch crypto-relevant headlines from NewsAPI or RSS fallback."""
-        api_key = os.getenv("NEWSAPI_KEY", "")
+        """Fetch crypto/macro headlines: Finnhub → NewsAPI → CoinDesk RSS."""
         headlines: list[str] = []
 
-        if api_key:
-            url = (
-                "https://newsapi.org/v2/everything"
-                "?q=bitcoin+OR+crypto+OR+federal+reserve+OR+interest+rates"
-                "&sortBy=publishedAt&pageSize=10&language=en"
-                f"&apiKey={api_key}"
-            )
+        finnhub_key = os.getenv("FINNHUB_API_KEY", "")
+        if finnhub_key:
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
-                        url, timeout=aiohttp.ClientTimeout(total=10)
+                        f"https://finnhub.io/api/v1/news?category=crypto&token={finnhub_key}",
+                        timeout=aiohttp.ClientTimeout(total=10),
                     ) as r:
+                        articles = await r.json()
+                headlines = [a.get("headline", "") for a in articles[:10] if a.get("headline")]
+                if headlines:
+                    return headlines
+            except Exception:
+                pass
+
+        newsapi_key = os.getenv("NEWSAPI_KEY", "")
+        if newsapi_key:
+            try:
+                url = (
+                    "https://newsapi.org/v2/everything"
+                    "?q=bitcoin+OR+crypto+OR+federal+reserve+OR+interest+rates"
+                    "&sortBy=publishedAt&pageSize=10&language=en"
+                    f"&apiKey={newsapi_key}"
+                )
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                         data = await r.json()
-                headlines = [
-                    a.get("title", "") for a in data.get("articles", [])[:10]
-                ]
-                return headlines
+                headlines = [a.get("title", "") for a in data.get("articles", [])[:10]]
+                if headlines:
+                    return headlines
             except Exception:
                 pass
 

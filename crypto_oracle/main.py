@@ -8,8 +8,6 @@ Startup sequence:
   5. Start FastAPI / uvicorn
 """
 
-from __future__ import annotations
-
 import asyncio
 import os
 import sys
@@ -54,7 +52,10 @@ async def lifespan(app: FastAPI):
     scheduler = setup_scheduler()
     scheduler.start()
 
-    await start_bot()
+    try:
+        await start_bot()
+    except Exception as exc:
+        print(f"[WARN] Telegram bot failed to start: {exc} — server continuing without it")
 
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
@@ -95,15 +96,12 @@ def create_app() -> FastAPI:
     )
 
     allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "*")
-    origins = (
-        ["*"]
-        if allowed_origins_raw == "*"
-        else [o.strip() for o in allowed_origins_raw.split(",")]
-    )
+    wildcard = allowed_origins_raw == "*"
+    origins = ["*"] if wildcard else [o.strip() for o in allowed_origins_raw.split(",")]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=True,
+        allow_credentials=not wildcard,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -112,7 +110,6 @@ def create_app() -> FastAPI:
     app.include_router(router)
 
     from crypto_oracle.api.websocket import manager
-
     from fastapi import WebSocket, WebSocketDisconnect
 
     @app.websocket("/ws/feed")
@@ -120,7 +117,6 @@ def create_app() -> FastAPI:
         await manager.connect(websocket)
         try:
             while True:
-                # Keep connection alive; data is pushed via broadcast
                 await asyncio.wait_for(websocket.receive_text(), timeout=60)
         except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
             await manager.disconnect(websocket)

@@ -57,22 +57,43 @@ class SentimentAgent(BaseAgent):
             return {"latest_value": 50, "latest_label": "Neutral", "7d_trend": []}
 
     async def _fetch_headlines(self, symbol: str) -> list[str]:
-        api_key = os.getenv("NEWSAPI_KEY", "")
-        query = f"{symbol} crypto"
-        if api_key:
+        """Fetch crypto headlines for symbol: Finnhub → NewsAPI → empty."""
+        finnhub_key = os.getenv("FINNHUB_API_KEY", "")
+        if finnhub_key:
             try:
-                url = (
-                    f"https://newsapi.org/v2/everything?q={query}"
-                    f"&sortBy=publishedAt&pageSize=8&language=en&apiKey={api_key}"
-                )
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
-                        url, timeout=aiohttp.ClientTimeout(total=10)
+                        f"https://finnhub.io/api/v1/news?category=crypto&token={finnhub_key}",
+                        timeout=aiohttp.ClientTimeout(total=10),
                     ) as r:
+                        articles = await r.json()
+                sym_lower = symbol.lower()
+                filtered = [
+                    a.get("headline", "") for a in articles
+                    if sym_lower in a.get("headline", "").lower()
+                    or sym_lower in a.get("summary", "").lower()
+                ]
+                headlines = (filtered or [a.get("headline", "") for a in articles])[:8]
+                headlines = [h for h in headlines if h]
+                if headlines:
+                    return headlines
+            except Exception:
+                pass
+
+        newsapi_key = os.getenv("NEWSAPI_KEY", "")
+        if newsapi_key:
+            try:
+                url = (
+                    f"https://newsapi.org/v2/everything?q={symbol}+crypto"
+                    f"&sortBy=publishedAt&pageSize=8&language=en&apiKey={newsapi_key}"
+                )
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                         data = await r.json()
                 return [a.get("title", "") for a in data.get("articles", [])[:8]]
             except Exception:
                 pass
+
         return []
 
     async def _fetch_trending(self) -> list[str]:

@@ -34,8 +34,13 @@ alpaca-py>=0.26.0
 aiohttp>=3.9.0
 websockets>=12.0
 
+# Reports
+reportlab>=4.0.0
+
 # Utils
 python-dotenv>=1.0.0
 pandas>=2.0.0
 numpy>=1.26.0
 tqdm>=4.67.0
+yfinance>=0.2.40
+finnhub-python>=2.4.0

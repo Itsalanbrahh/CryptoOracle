@@ -3,9 +3,17 @@ __pycache__/
 *.pyo
 *.egg-info/
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 *.db
 *.log
 vendor/
 .robinhood_session
+.hermes/
+*.pem
+node_modules/
+data/
+*.db-journal
+*.sqlite
