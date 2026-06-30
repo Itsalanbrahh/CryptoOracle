@@ -541,6 +541,28 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             except Exception as exc:
                 pass  # non-fatal; skip if close fails
 
+        # ── Cancel stale resting ENTRY orders ─────────────────────────────
+        # GTC entry limit orders that didn't fill (common overnight when the
+        # book is thin) would otherwise linger and can fill later on a stale
+        # signal — worst of all right at the daily settlement boundary. Cancel
+        # resting BUY orders each scan so entries are always re-decided fresh.
+        # Resting SELL orders (stop-loss / take-profit) are left alone — the
+        # heartbeat owns those.
+        try:
+            client = KalshiClient(key_id=os.getenv("KALSHI_API_KEY_ID", ""))
+            canceled_entries = 0
+            for o in await client.get_resting_orders():
+                if o.get("action") == "buy" and o.get("order_id"):
+                    try:
+                        await client.cancel_order(o["order_id"])
+                        canceled_entries += 1
+                    except Exception:
+                        pass  # already filled/canceled — non-fatal
+            if canceled_entries:
+                print(f"[Kalshi/SCAN] Canceled {canceled_entries} stale resting entry order(s)")
+        except Exception:
+            pass  # non-fatal; resting-order cleanup is best-effort
+
     # Re-load fresh entry counts after potential closes freed capital
     entries_today = pm.get_entry_count_today()
     deployed_today = pm.get_today_deployed_usd()

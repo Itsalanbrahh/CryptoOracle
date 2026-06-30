@@ -60,12 +60,35 @@ class KalshiClient:
                     raise ValueError(f"Kalshi API error {resp.status}: {data}")
                 return data
 
+    async def _delete(self, path: str) -> Any:
+        url = self.base_url + path
+        headers = _make_headers("DELETE", path, self.key_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                data = await resp.json()
+                if resp.status >= 400:
+                    raise ValueError(f"Kalshi API error {resp.status}: {data}")
+                return data
+
     async def get_markets(self, series_ticker: str = "KXBTCD", status: str = "open", limit: int = 100) -> list[dict]:
         data = await self._get("/markets", params={"series_ticker": series_ticker, "status": status, "limit": limit})
         return data.get("markets", [])
 
     async def get_balance(self) -> dict:
         return await self._get("/portfolio/balance", auth=True)
+
+    async def get_resting_orders(self, limit: int = 200) -> list[dict]:
+        """Return all resting (unfilled) orders across the portfolio."""
+        data = await self._get(
+            "/portfolio/orders",
+            params={"status": "resting", "limit": limit},
+            auth=True,
+        )
+        return data.get("orders", [])
+
+    async def cancel_order(self, order_id: str) -> dict:
+        """Cancel a single resting order by id (DELETE /portfolio/orders/{id})."""
+        return await self._delete(f"/portfolio/orders/{order_id}")
 
     async def place_order(self, ticker: str, side: str, count: int, price_cents: int, order_type: str = "limit") -> dict:
         """
