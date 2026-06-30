@@ -268,12 +268,18 @@ def _select_with_expiry_diversification(
     spot_price: float,
     top_n: int = 4,
     primary_share: int = 3,
+    target_no_price: float = 0.30,
 ) -> list[KalshiMarket]:
     """Select markets across expiry dates for diversification.
 
     Takes ``primary_share`` from the nearest expiry and the rest from
     the next available expiry, scoring within each group by the same
     criteria as ``select_target_markets``.
+
+    ``target_no_price`` sets the ideal NO contract price to scan for. A lower
+    value (e.g. 0.30) favors cheap-NO directional bets with asymmetric payoff
+    (risk $0.30 to win $0.70 ≈ 2.3:1) — far better for compounding a small
+    account than expensive NO-favorites (risk $0.88 to win $0.12).
     """
     if not markets:
         return []
@@ -300,16 +306,20 @@ def _select_with_expiry_diversification(
         return []
 
     def _score(m: KalshiMarket) -> float:
-        """Prefer cheap-NO markets (YES priced 0.05–0.20): high upside, asymmetric payoff.
-        Score = 0 near p=0.12 (ideal), rises as we move toward 50/50 (avoid).
-        Range markets scored by distance from spot as before.
+        """Prefer markets where the NO contract is priced near ``target_no_price``.
+
+        NO price = 1 − YES mid. Targeting a cheap NO (~0.30) means scanning for
+        below-spot strikes where a bearish NO bet pays ~2.3:1 — asymmetric
+        upside that compounds a small account, and consistent with the bearish
+        tech/regime gates. Range markets scored by distance from spot as before.
         """
         p = m.mid
         if p < 0.02 or p > 0.99:
             return 999.0
         if m.is_range:
             return abs(m.bin_center - spot_price) / 500.0
-        return abs(p - 0.12)
+        no_price = 1.0 - p
+        return abs(no_price - target_no_price)
 
     result: list[KalshiMarket] = []
 
@@ -464,9 +474,12 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # ── Expiration diversification ──────────────────────────────────────────
     # Partition directional markets by expiry date, score within each group,
     # then draw 3 from nearest expiry + 1 from next expiry. Same for range.
+    # target_no_price biases selection toward cheap-NO asymmetric-payoff bets
+    # (default 0.30 ≈ 2.3:1) — better geometric growth for a small account.
+    target_no_price = _env_float("KALSHI_TARGET_NO_PRICE", 0.30)
     half = max(1, limit // 2)
-    selected = _select_with_expiry_diversification(directional, spot, top_n=half, primary_share=3)
-    selected += _select_with_expiry_diversification(range_bins, spot, top_n=half, primary_share=3)
+    selected = _select_with_expiry_diversification(directional, spot, top_n=half, primary_share=3, target_no_price=target_no_price)
+    selected += _select_with_expiry_diversification(range_bins, spot, top_n=half, primary_share=3, target_no_price=target_no_price)
 
     results = []
     trades_executed = 0
