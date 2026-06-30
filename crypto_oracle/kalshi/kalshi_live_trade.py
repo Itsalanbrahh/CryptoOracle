@@ -29,11 +29,20 @@ async def main() -> None:
     live = os.getenv("KALSHI_LIVE_ENABLED", "0").strip() == "1"
     result = await run_kalshi_scan(limit=8, live=live)
 
-    mode = result['mode'].upper()
-    spot = result['spot_price']
-    scanned = result['markets_scanned']
-    executed = result['trades_executed']
-    deployed = result['total_deployed_usd']
+    mode = result.get('mode', 'unknown').upper()
+
+    # Early-exit scans (paused kill-switch, balance below minimum) return a
+    # gate dict WITHOUT spot_price/markets_scanned — those gates fire before
+    # spot is fetched. Report the reason and exit cleanly instead of crashing.
+    gate = result.get('gate_blocked')
+    if gate:
+        print(f'[Kalshi/{mode}] gate-blocked: {gate}')
+        return
+
+    spot = result.get('spot_price') or 0.0
+    scanned = result.get('markets_scanned', 0)
+    executed = result.get('trades_executed', 0)
+    deployed = result.get('total_deployed_usd', 0.0)
 
     lines = [f'[Kalshi/{mode}] BTC=${spot:,.0f} | {scanned} markets scanned']
     if executed:
