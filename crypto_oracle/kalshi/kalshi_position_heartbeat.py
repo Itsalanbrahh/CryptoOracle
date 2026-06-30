@@ -54,22 +54,53 @@ async def main() -> None:
     utc_now = datetime.now(timezone.utc)
     all_pos = pm._load_all()
     marked_local = 0
-    # Extract today's date in MMMDD format (e.g. "JUN25") from the ticker
-    # Kalshi event tickers contain embedded date like: KXBTCD-26JUN2517
+    # Extract expiry date from ticker and compare against now.
+    # Kalshi KXBTCD tickers encode: KXBTCD-{YY}{MON}{DD}{HH}
+    # e.g. KXBTCD-26JUN2517 → expires 2026-JUN-25 at 17:00 UTC
+    # Bug was: "== today_mmdoy" never fires for positions that expired yesterday
+    # (the script may have been down, or ran before market close). Fixed by
+    # computing the actual expiry datetime and checking utc_now >= expiry_dt.
     month_abbrs = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC"
-    today_mmdoy = utc_now.strftime("%b").upper() + utc_now.strftime("%d").upper()  # e.g. "JUN25"
+    month_num = {m: i+1 for i, m in enumerate(
+        ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
+    )}
     for p in all_pos:
         if p.get("closed"):
             continue
         event = p.get("event_ticker", "")
-        # Match MMMDD pattern in ticker (e.g., "JUN25")
-        m = re.search(f'({month_abbrs})(\d{{2}})', event)
-        if m and m.group() == today_mmdoy and utc_now.hour >= 17:
-            p["closed"] = True
-            p["closed_at"] = utc_now.isoformat()
-            p["close_reason"] = "settled (expired locally)"
-            marked_local += 1
-            print(f"[Kalshi/HEARTBEAT] LOCAL EXPIRE {p['ticker']} — marked as settled")
+        # Try to parse full expiry datetime from ticker suffix: MON + DD + HH
+        m = re.search(f'(\\d{{2}})({month_abbrs})(\\d{{2}})(\\d{{2}})$', event)
+        if m:
+            yy, mon_str, dd_str, hh_str = m.group(1), m.group(2), m.group(3), m.group(4)
+            try:
+                expiry_dt = datetime(
+                    2000 + int(yy), month_num[mon_str], int(dd_str),
+                    int(hh_str), 0, 0, tzinfo=timezone.utc
+                )
+                if utc_now < expiry_dt:
+                    continue
+            except (ValueError, KeyError):
+                continue
+        else:
+            # Fallback: match just MON+DD, assume 17:00 UTC expiry
+            m2 = re.search(f'({month_abbrs})(\\d{{2}})', event)
+            if not m2:
+                continue
+            mon_str, dd_str = m2.group(1), m2.group(2)
+            try:
+                expiry_dt = datetime(
+                    utc_now.year, month_num[mon_str], int(dd_str),
+                    17, 0, 0, tzinfo=timezone.utc
+                )
+                if utc_now < expiry_dt:
+                    continue
+            except (ValueError, KeyError):
+                continue
+        p["closed"] = True
+        p["closed_at"] = utc_now.isoformat()
+        p["close_reason"] = "settled (expired locally)"
+        marked_local += 1
+        print(f"[Kalshi/HEARTBEAT] LOCAL EXPIRE {p['ticker']} — marked as settled")
     if marked_local:
         pm._save_all(all_pos)
         print(f"[Kalshi/HEARTBEAT] Marked {marked_local} positions as expired locally")
