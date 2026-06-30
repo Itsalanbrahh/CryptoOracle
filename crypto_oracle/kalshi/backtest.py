@@ -123,12 +123,15 @@ def _hourly_vol(closes: list[float]) -> float:
 # ── GBM pricing (replicating strategy.py logic) ───────────────────────────────
 
 
+_GBM_DRIFT = 0.35  # must match strategy.py drift=0.35
+
+
 def _gbm_prob(spot: float, strike: float, hours_to_expiry: float, annual_vol: float) -> float:
     t = max(hours_to_expiry, 0.25) / 8760
     sigma_t = annual_vol * math.sqrt(t)
     if sigma_t < 1e-9:
         return 1.0 if spot >= strike else 0.0
-    d2 = math.log(spot / strike) / sigma_t
+    d2 = (math.log(spot / strike) + (_GBM_DRIFT - 0.5 * annual_vol ** 2) * t) / sigma_t
     return _ND().cdf(d2)
 
 
@@ -145,6 +148,9 @@ async def run_backtest(
     tte_max: float = 72.0,
     strike_step: float = 250.0,
     output_path: str | None = None,
+    no_only: bool = True,                    # match live: YES trades are eliminated
+    min_strike_distance_pct: float = 2.0,   # match live: 2% minimum from spot
+    uptrend_regime_pct: float = 0.10,       # match live: skip above-spot NO in strong uptrend
 ) -> dict:
     """Run a full backtest.
 
@@ -172,6 +178,14 @@ async def run_backtest(
         # Use trailing vol
         vol = _hourly_vol(hourly_closes[: i + 1])
 
+        # Regime: 14-day return for uptrend detection (same logic as loop.py)
+        btc_14d_return = 0.0
+        if i >= 336:  # 14 days * 24h
+            spot_14d_ago = hourly_closes[i - 336]
+            if spot_14d_ago > 0:
+                btc_14d_return = (spot - spot_14d_ago) / spot_14d_ago
+        uptrend_regime = btc_14d_return > uptrend_regime_pct
+
         # Simulate a set of possible strikes at $250 intervals
         # around spot ± 15%
         for dir_sign in [-1, 1]:
@@ -179,6 +193,12 @@ async def run_backtest(
                 strike = spot + dir_sign * step * strike_step
                 if strike <= 0:
                     continue
+
+                # ── Strike distance gate: must match live min_strike_distance_pct ──
+                strike_dist_pct = abs(strike - spot) / spot * 100
+                if strike_dist_pct < min_strike_distance_pct:
+                    continue
+
                 # Simulate TTE across the full range, including short windows
                 hours_to = max(tte_min, min(tte_max, step * 1.0))
                 # Mix in some 1-3h entries for diversity
@@ -189,8 +209,14 @@ async def run_backtest(
 
                 gbm_yes = _gbm_prob(spot, strike, hours_to, vol)
 
-                # Market price = efficient GBM pricing with tight spread (market is mostly efficient)
+                # Market price = efficient GBM pricing.
+                # Spread widens for OTM contracts to model real Kalshi liquidity:
+                # near-ATM (market_yes ~0.50) → spread ~0.01; deep OTM → spread ~0.05
                 market_yes = gbm_yes
+                otm_factor = 1.0 - 2.0 * abs(market_yes - 0.5)  # 1.0 at ATM, 0.0 at 0/1
+                spread = 0.005 + 0.045 * (1.0 - max(0.0, otm_factor))
+                yes_ask = min(0.97, market_yes + spread)
+                no_ask = min(0.97, (1.0 - market_yes) + spread)
 
                 # Agent belief = GBM + signal noise (agents think they see mispricing)
                 # Higher vol = more uncertainty = wider agent disagreement
@@ -203,8 +229,9 @@ async def run_backtest(
 
                 market_no = 1.0 - market_yes
 
-                edge_yes = belief_yes - market_yes
-                edge_no = belief_no - market_no
+                # Edge against execution price (ask), matching live strategy
+                exec_edge_yes = belief_yes - yes_ask
+                exec_edge_no = belief_no - no_ask
 
                 # Simulate confidence (correlated with vol stability)
                 confidence = max(0.40, min(0.95, 0.55 + (0.25 * (1.0 - min(1.0, vol / 1.5)))))
@@ -214,43 +241,39 @@ async def run_backtest(
                 exec_price = 0.0
                 position_usd = 0.0
                 profit_if_win = 0.0
-                buy_yes = edge_yes > min_edge and confidence >= min_confidence
-                buy_no = edge_no > min_edge and confidence >= min_confidence
+
+                buy_yes = exec_edge_yes > min_edge and confidence >= min_confidence and not no_only
+                buy_no = exec_edge_no > min_edge and confidence >= min_confidence
+
+                # ── Regime filter: block above-spot NO in strong uptrend ──────
+                if buy_no and uptrend_regime and strike > spot:
+                    buy_no = False
 
                 if buy_yes and not buy_no:
                     action = "BUY_YES"
-                    exec_price = market_yes + 0.01  # simulate ask spread
-                    pos_size = max_position * min(1.0, confidence * (1.0 + edge_yes))
+                    exec_price = yes_ask
+                    pos_size = max_position * min(1.0, confidence * (1.0 + exec_edge_yes))
                     count = max(1, int(pos_size / exec_price))
                     position_usd = round(count * exec_price, 2)
                     profit_if_win = round(count * (1.0 - exec_price), 2)
-                    edge = edge_yes
+                    edge = exec_edge_yes
                 elif buy_no and not buy_yes:
                     action = "BUY_NO"
-                    exec_price = market_no + 0.01  # simulate ask spread for NO
-                    pos_size = max_position * min(1.0, confidence * (1.0 + edge_no))
+                    exec_price = no_ask
+                    pos_size = max_position * min(1.0, confidence * (1.0 + exec_edge_no))
                     count = max(1, int(pos_size / exec_price))
                     position_usd = round(count * exec_price, 2)
                     profit_if_win = round(count * (1.0 - exec_price), 2)
-                    edge = edge_no
+                    edge = exec_edge_no
                 elif buy_yes and buy_no:
-                    # Both edges positive — take the larger one
-                    if edge_yes >= edge_no:
-                        action = "BUY_YES"
-                        exec_price = market_yes + 0.01
-                        pos_size = max_position * min(1.0, confidence * (1.0 + edge_yes))
-                        count = max(1, int(pos_size / exec_price))
-                        position_usd = round(count * exec_price, 2)
-                        profit_if_win = round(count * (1.0 - exec_price), 2)
-                        edge = edge_yes
-                    else:
-                        action = "BUY_NO"
-                        exec_price = market_no + 0.01
-                        pos_size = max_position * min(1.0, confidence * (1.0 + edge_no))
-                        count = max(1, int(pos_size / exec_price))
-                        position_usd = round(count * exec_price, 2)
-                        profit_if_win = round(count * (1.0 - exec_price), 2)
-                        edge = edge_no
+                    # Both edges positive — NO only (live strategy never buys YES)
+                    action = "BUY_NO"
+                    exec_price = no_ask
+                    pos_size = max_position * min(1.0, confidence * (1.0 + exec_edge_no))
+                    count = max(1, int(pos_size / exec_price))
+                    position_usd = round(count * exec_price, 2)
+                    profit_if_win = round(count * (1.0 - exec_price), 2)
+                    edge = exec_edge_no
                 else:
                     continue  # HOLD — no trade signal
 
@@ -286,11 +309,14 @@ async def run_backtest(
                     "profit_if_win": profit_if_win,
                     "won": won,
                     "pnl": pnl,
-                    "aggregate": round(signal, 4),  # raw agent signal driving the trade
+                    "aggregate": round(signal, 4),
                     "gbm_baseline": round(gbm_yes, 4),
                     "belief_yes": round(belief_yes, 4),
                     "market_yes_price": round(market_yes, 4),
+                    "spread": round(spread, 4),
                     "vol": round(vol, 4),
+                    "btc_14d_return": round(btc_14d_return, 4),
+                    "uptrend_regime": uptrend_regime,
                     "strike_distance_pct": round((strike - spot) / spot * 100, 2),
                 }
                 trades.append(trade)
@@ -344,12 +370,17 @@ async def run_backtest(
         ) if no_trades else 0,
         "yes_pct": round(len(yes_trades) / total, 4) if total else 0,
         "no_pct": round(len(no_trades) / total, 4) if total else 0,
+        "regime_filtered_count": sum(1 for t in trades if t.get("uptrend_regime") and t["action"] == "BUY_NO" and t["strike"] > t["spot_entry"]),
         "settings": {
             "min_edge": min_edge,
             "min_confidence": min_confidence,
             "max_position": max_position,
             "tte_min": tte_min,
             "tte_max": tte_max,
+            "no_only": no_only,
+            "min_strike_distance_pct": min_strike_distance_pct,
+            "uptrend_regime_pct": uptrend_regime_pct,
+            "gbm_drift": _GBM_DRIFT,
         },
     }
 
