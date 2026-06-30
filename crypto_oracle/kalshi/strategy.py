@@ -159,6 +159,13 @@ def decide_kalshi_trade(
         # Conviction-weighted position sizing: scales $2–5 based on confidence × edge
         conviction_score = max(0.35, min(1.0, (confidence - 0.50) * 8 + exec_edge_no * 5))
         position_usd = max_position_usd * conviction_score
+        # ── Payoff-ratio boost for cheap NO contracts ───────────────────────
+        # A NO at $0.12 pays 7.3:1 — Kelly fraction grows with the payoff ratio.
+        # Boost is capped at 1.5x to avoid over-sizing on very cheap contracts
+        # that are cheap for a reason (near-zero GBM probability of winning).
+        payoff_ratio = (1.0 - exec_price) / exec_price if exec_price > 0 else 1.0
+        payoff_boost = min(1.5, 1.0 + max(0.0, payoff_ratio - 1.0) * 0.08)
+        position_usd = position_usd * payoff_boost
         # ── Divergence cut: reduce position when agents strongly disagree ──
         if divergence_cut < 1.0:
             position_usd = position_usd * divergence_cut

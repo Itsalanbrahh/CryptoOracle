@@ -168,8 +168,13 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
     
     # Proven edge agents
     momentum_cont = score_map.get("MomentumContinuation", 0.0)
-    mean_rev = score_map.get("MeanReversion", 0.0)
     vol_snap = score_map.get("VolatilitySnapback", 0.0)
+    # MeanReversion is structurally 50/50 YES/NO — its weak signals add
+    # directional noise that dilutes the ensemble's NO bias. Zero it out
+    # unless the signal is strongly convicted (|score| >= 0.25, meaning
+    # a sharp move of ~0.75%+ detected).
+    _mean_rev_raw = score_map.get("MeanReversion", 0.0)
+    mean_rev = _mean_rev_raw if abs(_mean_rev_raw) >= 0.25 else 0.0
 
     # Weighted aggregate with agent tracker adjustments
     weights = at.get_agent_weights(agent_signals=agent_signals)
@@ -200,6 +205,10 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
     # Specialists: 30% combined (Macro 8%, Technical 10%, Knowledge 7%, LinReg 5%)
     # New agents: 34% (Kronos 10%, Candlestick 5%, S/R 4%, DynamicSR 4%, FVG 4%, Fib 7%)
     # Proven edge agents: 36% combined ← heaviest weight
+    #   MomentumContinuation 14%, VolatilitySnapback 19%, MeanReversion 3%
+    #   MeanReversion cut from 8%→3%: it's structurally 50/50 YES/NO and
+    #   dilutes the NO bias. 5pts reallocated to VolatilitySnapback which
+    #   does vol-conditioned mean reversion with better directional discipline.
     aggregate = (
         # Specialists (30%)
         macro * macro_w * 0.08
@@ -215,8 +224,8 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
         + fib * fib_w * 0.07
         # Proven edge agents (36%) ← heaviest weight
         + momentum_cont * momentum_cont_w * 0.14
-        + mean_rev * mean_rev_w * 0.08
-        + vol_snap * vol_snap_w * 0.14
+        + mean_rev * mean_rev_w * 0.03
+        + vol_snap * vol_snap_w * 0.19
     )
 
     # Clamp
@@ -292,15 +301,16 @@ def _select_with_expiry_diversification(
         return []
 
     def _score(m: KalshiMarket) -> float:
-        """Score function — same as select_target_markets."""
+        """Prefer cheap-NO markets (YES priced 0.05–0.20): high upside, asymmetric payoff.
+        Score = 0 near p=0.12 (ideal), rises as we move toward 50/50 (avoid).
+        Range markets scored by distance from spot as before.
+        """
         p = m.mid
         if p < 0.02 or p > 0.99:
             return 999.0
         if m.is_range:
             return abs(m.bin_center - spot_price) / 500.0
-        uncertainty_score = abs(p - 0.5)
-        high_conf_score = abs(p - 0.87) * 0.3
-        return min(uncertainty_score, high_conf_score)
+        return abs(p - 0.12)
 
     result: list[KalshiMarket] = []
 
