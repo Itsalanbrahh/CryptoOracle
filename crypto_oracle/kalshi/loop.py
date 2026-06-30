@@ -657,16 +657,14 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             confidence=confidence,
             edge=decision.edge,
             gbm_baseline=decision.gbm_baseline,
-            belief_yes=None,   # computed inside strategy; not returned atm
+            belief_yes=decision.gbm_baseline,  # KalshiDecision.gbm_baseline holds the tilted belief_yes
             market_yes_price=market.mid,
             spot_price=spot,
             realized_vol=annual_vol,
             funding_rate=funding_rate,
             funding_tilt=fund_tilt,
             hours_to_expiry=market.hours_to_expiry,
-            gate_blocked=exec_error if exec_error in (
-                "hold", "error"
-            ) and exec_error else None,
+            gate_blocked=exec_error if exec_status in ("hold", "error") else None,
             daily_deployed_usd=deployed_today,
             daily_trades=entries_today,
             daily_cap_usd=max_daily_risk,
