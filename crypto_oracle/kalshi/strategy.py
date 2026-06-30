@@ -9,13 +9,17 @@ from typing import Literal
 from .markets import KalshiMarket
 
 
-def _gbm_prob(spot: float, strike: float, hours_to_expiry: float, annual_vol: float) -> float:
-    """P(BTC > strike at expiry) under lognormal GBM with zero drift."""
+def _gbm_prob(spot: float, strike: float, hours_to_expiry: float, annual_vol: float, drift: float = 0.35) -> float:
+    """P(BTC > strike at expiry) under lognormal GBM with BTC long-run drift.
+
+    drift=0.35 (35% annual) reflects BTC's historical upward bias and corrects
+    the zero-drift model's systematic underpricing of above-spot YES contracts.
+    """
     t = max(hours_to_expiry, 0.25) / 8760
     sigma_t = annual_vol * math.sqrt(t)
     if sigma_t < 1e-9:
         return 1.0 if spot >= strike else 0.0
-    d2 = math.log(spot / strike) / sigma_t
+    d2 = (math.log(spot / strike) + (drift - 0.5 * annual_vol ** 2) * t) / sigma_t
     return _ND().cdf(d2)
 
 

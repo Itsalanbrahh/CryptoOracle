@@ -183,18 +183,16 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
     know_w = weights.get("KnowledgeMarket", 1.0)
     linreg_w = weights.get("LinearRegressionMarket", 1.0)
 
-    # New agents start with neutral weight (1.0) until enough resolved trades
-    kronos_w = 1.0
-    candlestick_w = 1.0
-    sr_w = 1.0
-    dynamic_sr_w = 1.0
-    fvg_w = 1.0
-    fib_w = 1.0
-
-    # Proven edge agents also start neutral
-    momentum_cont_w = 1.0
-    mean_rev_w = 1.0
-    vol_snap_w = 1.0
+    # All agents get dynamic weights from tracker; defaults to 1.0 until 3+ resolved trades
+    kronos_w = weights.get("KronosMarket", 1.0)
+    candlestick_w = weights.get("CandlestickPatterns", 1.0)
+    sr_w = weights.get("SupportResistance", 1.0)
+    dynamic_sr_w = weights.get("DynamicSR", 1.0)
+    fvg_w = weights.get("FairValueGap", 1.0)
+    fib_w = weights.get("FibonacciRetracement", 1.0)
+    momentum_cont_w = weights.get("MomentumContinuation", 1.0)
+    mean_rev_w = weights.get("MeanReversion", 1.0)
+    vol_snap_w = weights.get("VolatilitySnapback", 1.0)
 
     # Pre-existing weights only
     pre_total_w = macro_w + tech_w + know_w + linreg_w
@@ -377,7 +375,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     rebalance_enabled = os.getenv("KALSHI_REBALANCE_ENABLED", "1").strip() == "1"
     rebalance_edge_mult = _env_float("KALSHI_REBALANCE_EDGE_MULTIPLIER", 1.5)
     rebalance_min_hold = _env_float("KALSHI_REBALANCE_MIN_HOLD_MINUTES", 30.0)
-    min_strike_dist = _env_float("KALSHI_MIN_STRIKE_DISTANCE_PCT", 0.5)
+    min_strike_dist = _env_float("KALSHI_MIN_STRIKE_DISTANCE_PCT", 2.0)
 
     # ── Daily entry state (uses position manager for persistence) ─────────────
     entries_today = pm.get_entry_count_today()
@@ -433,6 +431,12 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             pct_change = (spot - spot_6h_ago) / spot_6h_ago
             # Map percentage change to [-1, 1] trigger: ±1% → ±0.5, ±3% → ±1.0
             momentum_trigger = max(-1.0, min(1.0, pct_change * 50))
+
+    # Time-of-day liquidity filter: 02:00–12:00 UTC = low-liquidity window
+    # (roughly 10pm–8am US Eastern). Kalshi is US-regulated; spreads widen
+    # and signal quality drops overnight. Dampen confidence by 15% during this window.
+    _hour_utc = datetime.now(timezone.utc).hour
+    _liquidity_conf_mult = 0.85 if 2 <= _hour_utc < 12 else 1.0
 
     directional, range_bins = await asyncio.gather(
         fetch_btc_markets(min_volume=100.0),
@@ -506,6 +510,8 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         # Apply funding rate tilt after agent signals — it's a market-level
         # crowding signal, not tied to any individual market's microstructure.
         tilted_aggregate = max(-1.0, min(1.0, aggregate + fund_tilt))
+        # Dampen confidence during low-liquidity hours
+        confidence = max(0.20, min(0.95, confidence * _liquidity_conf_mult))
         decision = decide_kalshi_trade(
             market,
             aggregate=tilted_aggregate,
@@ -525,14 +531,38 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         order_id = None
 
         if decision.action != "HOLD" and live:
-            # ── Gate 4: daily risk cap (entries only) ─────────────────────────
+            # ── Gate 4: correlated NO cap — max 2 open NO positions per expiry ─
+            _event_ticker = market.ticker.split('-')[0] + '-' + market.ticker.split('-')[1]
+            if decision.action == "BUY_NO":
+                _open_no_for_event = sum(
+                    1 for p in pm.get_open_positions()
+                    if p.get("side") == "no" and p.get("event_ticker") == _event_ticker
+                )
+                _max_no_per_expiry = _env_int("KALSHI_MAX_NO_PER_EXPIRY", 2)
+                if _open_no_for_event >= _max_no_per_expiry:
+                    exec_status = "hold"
+                    exec_error = (
+                        f"corr_cap: {_open_no_for_event} NO positions already open "
+                        f"for expiry {_event_ticker} (max={_max_no_per_expiry})"
+                    )
+                    results.append({
+                        "ticker": decision.ticker, "strike": decision.strike,
+                        "action": "HOLD", "side": "hold",
+                        "market_mid": market.mid, "exec_price": decision.price,
+                        "count": 0, "position_usd": 0.0, "profit_if_win": 0.0,
+                        "confidence": decision.confidence, "edge": decision.edge,
+                        "agent_signals": agent_signals, "reasoning": exec_error,
+                        "exec_status": exec_status, "exec_error": exec_error, "order_id": None,
+                    })
+                    continue
+            # ── Gate 6: daily risk cap (entries only) ─────────────────────────
             if deployed_today + decision.position_usd > max_daily_risk:
                 exec_status = "hold"
                 exec_error = (
                     f"daily_risk_cap: ${deployed_today:.2f} deployed today "
                     f"+ ${decision.position_usd:.2f} would exceed ${max_daily_risk:.2f} limit"
                 )
-            # ── Gate 5: max entries per day (exits/closes are not counted) ────
+            # ── Gate 7: max entries per day (exits/closes are not counted) ────
             elif entries_today >= max_entries_per_day:
                 exec_status = "hold"
                 exec_error = f"max_entries_per_day: {entries_today}/{max_entries_per_day} reached"

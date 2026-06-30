@@ -250,15 +250,20 @@ def get_agent_weights(
         total_calls = s.get("trades_analyzed", 0)
         result[agent_name] = _winrate_weight(wins, losses, right_side, total_calls)
 
-    # Divergence detection
+    # Divergence detection — use std dev across ALL agent scores, not just 2 agents.
+    # High std dev means agents strongly disagree; cut position size proportionally.
     if agent_signals:
-        technical = agent_signals.get("TechnicalMarket", {}).get("score", 0)
-        knowledge = agent_signals.get("KnowledgeMarket", {}).get("score", 0)
-        spread = abs(technical - knowledge)
-        if spread > 0.5:
-            # Strong divergence — cut position sizes
-            cut = 1.0 - min(0.5, (spread - 0.5))
-            result["divergence_cut"] = max(0.5, cut)
+        scores = [sig.get("score", 0.0) for sig in agent_signals.values() if sig.get("score") is not None]
+        if len(scores) >= 3:
+            mean_score = sum(scores) / len(scores)
+            variance = sum((s - mean_score) ** 2 for s in scores) / len(scores)
+            std_dev = variance ** 0.5
+            # std_dev > 0.35 = notable divergence; > 0.60 = strong disagreement
+            if std_dev > 0.35:
+                cut = 1.0 - min(0.5, (std_dev - 0.35) * 1.4)
+                result["divergence_cut"] = max(0.5, cut)
+            else:
+                result["divergence_cut"] = 1.0
         else:
             result["divergence_cut"] = 1.0
     else:

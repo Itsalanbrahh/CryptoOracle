@@ -349,8 +349,8 @@ async def check_take_profit(
     """Check if a position should take profit.
 
     take_profit_pct: fraction of max theoretical gain captured (default 70%).
-    For YES: max gain = (1 - entry_price) * count; captured when mid is high.
-    For NO:  max gain = entry_price * count; captured when mid is low.
+    For YES: max gain = (1 - entry_price) * count; captured when mid rises.
+    For NO:  max gain = (1 - entry_price) * count; captured when mid falls.
     Returns (should_close, reason_string).
     """
     cost = _position_cost(position)
@@ -362,7 +362,9 @@ async def check_take_profit(
         max_gain = (1.0 - position["entry_price"]) * position["count"]
         captured = (value - cost) / max_gain if max_gain > 0 else 0.0
     else:
-        max_gain = position["entry_price"] * position["count"]
+        # NO bought at entry_price; wins $1 if BTC stays below strike.
+        # Max gain = (1 - entry_price) * count, same structure as YES.
+        max_gain = (1.0 - position["entry_price"]) * position["count"]
         captured = (value - cost) / max_gain if max_gain > 0 else 0.0
 
     if captured >= take_profit_pct:
@@ -437,15 +439,13 @@ async def check_strike_distance_stop_loss(
     current_spot: float,
     strike_distance_pct: float = 0.50,
 ) -> tuple[bool, str]:
-    """Exit early if BTC has moved 50% of the distance from entry spot to strike.
+    """Exit early if BTC has moved strike_distance_pct of the way from entry to strike.
 
-    For a NO position (betting BTC stays below strike): if BTC drops toward the
-    strike, our edge erodes. Exit when it's crossed halfway.
+    For a NO position (betting BTC stays BELOW strike): the risk is BTC RISING toward
+    the strike. Exit when BTC has risen halfway from entry toward strike.
 
-    For a YES position (betting BTC exceeds strike): if BTC rises toward the
-    strike, our edge improves — no trigger. But if BTC drops away from the
-    strike, that's actually favorable for YES... this check mainly protects
-    NO positions where the market is moving against us.
+    For a YES position (betting BTC stays ABOVE strike): the risk is BTC FALLING away
+    from the strike. Exit when BTC has fallen halfway from entry down from strike.
     """
     spot_at_entry = position.get("spot_at_entry", 0)
     strike = position.get("strike", 0)
@@ -453,29 +453,31 @@ async def check_strike_distance_stop_loss(
         return False, ""
 
     if position["side"] == "no":
-        # We bet BTC stays below strike. Risk: BTC drops toward strike.
-        # Distance = spot_at_entry - strike (positive for NO positions below spot)
-        dist = abs(spot_at_entry - strike)
-        if dist < 10:
-            return False, ""  # negligible distance, don't trigger
-        halfway = spot_at_entry - dist * strike_distance_pct
-        if current_spot <= halfway:
-            return True, (
-                f"strike_dist_stop: BTC ${current_spot:.0f} crossed "
-                f"{strike_distance_pct:.0%} of distance to strike ${strike:,.0f} "
-                f"(entry=${spot_at_entry:,.0f}, dist=${dist:,.0f}, threshold=${halfway:,.0f})"
-            )
-    elif position["side"] == "yes":
-        # We bet BTC rises above strike. Risk: BTC stays flat/moves down.
+        # NO: bought because BTC is below strike. Risk = BTC rises toward strike.
+        # Threshold: spot_at_entry + (strike - spot_at_entry) * pct
         dist = abs(strike - spot_at_entry)
         if dist < 10:
             return False, ""
-        halfway = spot_at_entry + dist * strike_distance_pct
-        if current_spot >= halfway:
+        threshold = spot_at_entry + dist * strike_distance_pct
+        if current_spot >= threshold:
             return True, (
-                f"strike_dist_stop: BTC ${current_spot:.0f} crossed "
-                f"{strike_distance_pct:.0%} of distance to strike ${strike:,.0f} "
-                f"(entry=${spot_at_entry:,.0f}, dist=${dist:,.0f}, threshold=${halfway:,.0f})"
+                f"strike_dist_stop: BTC ${current_spot:.0f} rose "
+                f"{strike_distance_pct:.0%} of distance toward strike ${strike:,.0f} "
+                f"(entry=${spot_at_entry:,.0f}, dist=${dist:,.0f}, threshold=${threshold:,.0f})"
+            )
+    elif position["side"] == "yes":
+        # YES: bought because BTC is near/above strike. Risk = BTC falls away from strike.
+        # Threshold: spot_at_entry - (spot_at_entry - strike) * pct (if spot > strike)
+        #            or: spot_at_entry - dist * pct if spot is below strike at entry
+        dist = abs(spot_at_entry - strike)
+        if dist < 10:
+            return False, ""
+        threshold = spot_at_entry - dist * strike_distance_pct
+        if current_spot <= threshold:
+            return True, (
+                f"strike_dist_stop: BTC ${current_spot:.0f} fell "
+                f"{strike_distance_pct:.0%} of distance away from strike ${strike:,.0f} "
+                f"(entry=${spot_at_entry:,.0f}, dist=${dist:,.0f}, threshold=${threshold:,.0f})"
             )
     return False, ""
 

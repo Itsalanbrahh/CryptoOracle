@@ -29,14 +29,28 @@ _VOL_DEFAULT = 0.65
 
 # ── Historical data fetching ──────────────────────────────────────────────────
 
+# Module-level candle cache: avoids repeat Kraken API calls within a single scan.
+# Key = days requested, value = (unix_timestamp_fetched, candles_list).
+_CANDLE_CACHE: dict[int, tuple[float, list[dict]]] = {}
+_CANDLE_CACHE_TTL = 1800  # 30 minutes
+
 
 async def fetch_historical_btc(days: int = _DEFAULT_DAYS) -> list[dict]:
     """Fetch hourly BTC candles from Kraken for the last N days.
 
+    Results are cached for 30 minutes so multiple agents in a single scan
+    share one Kraken API call instead of each making independent requests.
     Returns list of {ts, open, high, low, close} sorted chronologically.
     """
+    import time
     import aiohttp
     import asyncio
+
+    cached = _CANDLE_CACHE.get(days)
+    if cached:
+        fetched_at, candles = cached
+        if time.time() - fetched_at < _CANDLE_CACHE_TTL:
+            return candles
 
     # Kraken OHLC: interval=60 (1h)
     url = "https://api.kraken.com/0/public/OHLC"
@@ -83,6 +97,7 @@ async def fetch_historical_btc(days: int = _DEFAULT_DAYS) -> list[dict]:
             "volume": float(row[6]),
         })
 
+    _CANDLE_CACHE[days] = (time.time(), candles)
     return candles
 
 

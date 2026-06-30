@@ -28,8 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# Add Kronos to path
-_KRONOS_PATH = Path("/Users/alanruelas/vendor/kronos")
+# Add Kronos to path — resolved from KRONOS_PATH env var so it works in any environment
+_KRONOS_PATH = Path(os.getenv("KRONOS_PATH", "/Users/alanruelas/vendor/kronos"))
 if _KRONOS_PATH.exists():
     sys.path.insert(0, str(_KRONOS_PATH))
 
@@ -68,11 +68,14 @@ _device = None
 
 
 def _ensure_model():
-    """Lazy-load Kronos model once per process."""
+    """Lazy-load Kronos model once per process. Returns None if path unavailable."""
     global _model, _tokenizer, _predictor, _device
 
     if _predictor is not None:
         return _predictor
+
+    if not _KRONOS_PATH.exists():
+        return None  # Kronos not available in this environment; agent returns neutral
 
     import torch
     from model import get_model_class, KronosPredictor
@@ -126,6 +129,21 @@ async def run_forecast(pred_len: int = 24) -> dict:
         return cached
 
     predictor = _ensure_model()
+    if predictor is None:
+        neutral: dict = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "pred_len": pred_len,
+            "direction": "NEUTRAL",
+            "conviction": 0.0,
+            "avg_magnitude_pct": 0.0,
+            "up_hours": pred_len // 2,
+            "down_hours": pred_len // 2,
+            "direction_changes": 0,
+            "hourly_forecast": [],
+            "_unavailable": True,
+        }
+        return neutral
+
     feed = await _fetch_btc_data(days=21)
     last_close = float(feed["close"].iloc[-1])
 
@@ -543,6 +561,9 @@ class KronosMarketAgent:
         # Get or generate forecast
         if self._forecast_cache is None:
             self._forecast_cache = await run_forecast(pred_len=24)
+
+        if self._forecast_cache.get("_unavailable"):
+            return {"score": 0.0, "confidence": 0.0, "reasoning": "Kronos unavailable (set KRONOS_PATH env var)"}
 
         result = await score_market(strike, hours_to_expiry, spot, self._forecast_cache)
         return result
