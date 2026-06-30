@@ -286,7 +286,9 @@ async def run_backtest(
                     "profit_if_win": profit_if_win,
                     "won": won,
                     "pnl": pnl,
+                    "aggregate": round(signal, 4),  # raw agent signal driving the trade
                     "gbm_baseline": round(gbm_yes, 4),
+                    "belief_yes": round(belief_yes, 4),
                     "market_yes_price": round(market_yes, 4),
                     "vol": round(vol, 4),
                     "strike_distance_pct": round((strike - spot) / spot * 100, 2),
@@ -522,6 +524,11 @@ async def run_agent_backtest(
 
             pnl = round(profit_if_win, 2) if won else round(-position_usd, 2)
 
+            # Track directional accuracy independently from trade outcome:
+            # was the agent's signal direction (positive=up, negative=down) correct?
+            price_went_up = settle_price > spot
+            dir_correct = (score > 0 and price_went_up) or (score < 0 and not price_went_up)
+
             trades.append({
                 "ts": ts,
                 "spot_entry": round(spot, 2),
@@ -534,6 +541,7 @@ async def run_agent_backtest(
                 "settle_offset": settle_offset,
                 "settle_price": round(settle_price, 2),
                 "won": won,
+                "direction_correct": dir_correct,
                 "pnl": pnl,
                 "reasoning": result_sig.get("reasoning", ""),
             })
@@ -545,11 +553,20 @@ async def run_agent_backtest(
 
     total = len(trades)
     wins = sum(1 for t in trades if t["won"])
+    dir_correct_total = sum(1 for t in trades if t["direction_correct"])
     yes_trades = [t for t in trades if t["action"] == "BUY_YES"]
     no_trades = [t for t in trades if t["action"] == "BUY_NO"]
     yes_wins = sum(1 for t in yes_trades if t["won"])
     no_wins = sum(1 for t in no_trades if t["won"])
     total_pnl = sum(t["pnl"] for t in trades)
+
+    # Score differential on NO trades: good agents are more bearish on winning NO trades
+    no_win_scores = [t["score"] for t in no_trades if t["won"]]
+    no_loss_scores = [t["score"] for t in no_trades if not t["won"]]
+    no_score_diff = (
+        (sum(no_win_scores) / len(no_win_scores)) - (sum(no_loss_scores) / len(no_loss_scores))
+        if no_win_scores and no_loss_scores else None
+    )
 
     summary = {
         "agent": agent_name,
@@ -558,6 +575,7 @@ async def run_agent_backtest(
         "total_trades": total,
         "wins": wins,
         "win_rate": round(wins / total, 4),
+        "direction_accuracy": round(dir_correct_total / total, 4),  # score sign vs actual price move
         "total_pnl": round(total_pnl, 2),
         "avg_pnl_per_trade": round(total_pnl / total, 2),
         "yes_trades": len(yes_trades),
@@ -570,6 +588,7 @@ async def run_agent_backtest(
         "no_pnl": round(sum(t["pnl"] for t in no_trades), 2),
         "yes_pct": round(len(yes_trades) / total, 4) if total else 0,
         "no_pct": round(len(no_trades) / total, 4) if total else 0,
+        "no_score_diff_win_vs_loss": round(no_score_diff, 4) if no_score_diff is not None else None,
         "abstain_rate": "not tracked (only fired trades recorded)",
     }
 

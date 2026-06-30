@@ -194,36 +194,37 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
     mean_rev_w = weights.get("MeanReversion", 1.0)
     vol_snap_w = weights.get("VolatilitySnapback", 1.0)
 
-    # Pre-existing weights only
-    pre_total_w = macro_w + tech_w + know_w + linreg_w
-    if pre_total_w <= 0:
-        pre_total_w = 1.0
-
-    # 13-agent aggregate:
-    # Specialists: 30% combined (Macro 8%, Technical 10%, Knowledge 7%, LinReg 5%)
-    # New agents: 34% (Kronos 10%, Candlestick 5%, S/R 4%, DynamicSR 4%, FVG 4%, Fib 7%)
-    # Proven edge agents: 36% combined ← heaviest weight
-    #   MomentumContinuation 14%, VolatilitySnapback 19%, MeanReversion 3%
-    #   MeanReversion cut from 8%→3%: it's structurally 50/50 YES/NO and
-    #   dilutes the NO bias. 5pts reallocated to VolatilitySnapback which
-    #   does vol-conditioned mean reversion with better directional discipline.
+    # 13-agent aggregate — weights recalibrated from 90-day simulation data:
+    # Specialists (30%): Macro 12%, Technical 12%, Knowledge 3%, LinReg 3%
+    # New agents (46%): Fib 20%, Candlestick 6%, S/R 5%, DynamicSR 5%, FVG 5%,
+    #                   Kronos -5% INVERTED (more bullish on NO wins → flip sign)
+    # Proven edge (22%): MomentumContinuation 14%, VolatilitySnapback 5%, MeanReversion 3%
+    #
+    # Changes from sim analysis (90d, 7,433 trades):
+    #   FibonacciRetracement  7%→20%: strongest avg bearish signal (-0.25 avg score)
+    #   MacroMarket           8%→12%: second strongest bearish signal (-0.24 avg)
+    #   TechnicalMarket      10%→12%: best filter signal (8.8pp WR gap by sign)
+    #   KronosMarket         10%→-5%: inverted — bullish on NO winners, bearish on losers
+    #   KnowledgeMarket       7%→3%: always bullish (+0.16 avg), fights NO strategy
+    #   LinearRegressionMkt   5%→3%: mild bullish bias, counterproductive
+    #   VolatilitySnapback   19%→5%: fires only 4.4% of the time, ~0 avg signal
     aggregate = (
         # Specialists (30%)
-        macro * macro_w * 0.08
-        + technical * tech_w * 0.10
-        + knowledge * know_w * 0.07
-        + linreg * linreg_w * 0.05
-        # New agents (34%)
-        + kronos * kronos_w * 0.10
-        + candlestick * candlestick_w * 0.05
-        + sr * sr_w * 0.04
-        + dynamic_sr * dynamic_sr_w * 0.04
-        + fvg * fvg_w * 0.04
-        + fib * fib_w * 0.07
-        # Proven edge agents (36%) ← heaviest weight
+        macro * macro_w * 0.12
+        + technical * tech_w * 0.12
+        + knowledge * know_w * 0.03
+        + linreg * linreg_w * 0.03
+        # New agents (46%) — Kronos inverted: bullish Kronos = bearish signal for NO
+        - kronos * kronos_w * 0.05
+        + candlestick * candlestick_w * 0.06
+        + sr * sr_w * 0.05
+        + dynamic_sr * dynamic_sr_w * 0.05
+        + fvg * fvg_w * 0.05
+        + fib * fib_w * 0.20
+        # Proven edge agents (22%)
         + momentum_cont * momentum_cont_w * 0.14
         + mean_rev * mean_rev_w * 0.03
-        + vol_snap * vol_snap_w * 0.19
+        + vol_snap * vol_snap_w * 0.05
     )
 
     # Clamp
@@ -414,11 +415,12 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         except Exception as exc:
             kalshi_balance_cents = None  # non-fatal; proceed but log it
 
-    spot, annual_vol, funding_rate, spot_history = await asyncio.gather(
+    spot, annual_vol, funding_rate, spot_history, spot_history_14d = await asyncio.gather(
         fetch_spot_price(),
         fetch_realized_vol(hours=24),
         fetch_funding_rate(),
-        fetch_spot_history(days=1),  # 24h of hourly data — enough for 6h momentum
+        fetch_spot_history(days=1),   # 24h of hourly data — enough for 6h momentum
+        fetch_spot_history(days=14),  # 14-day window for regime detection
     )
     # Funding rate adds a small directional tilt on top of agent aggregate
     fund_tilt = funding_tilt(funding_rate)
@@ -431,6 +433,17 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             pct_change = (spot - spot_6h_ago) / spot_6h_ago
             # Map percentage change to [-1, 1] trigger: ±1% → ±0.5, ±3% → ±1.0
             momentum_trigger = max(-1.0, min(1.0, pct_change * 50))
+
+    # ── Regime detection: 14-day BTC return ─────────────────────────────────
+    # The volatility risk premium (core edge of cheap-NO strategy) compresses
+    # in strong BTC uptrends. Above-spot NO positions become adversarial when
+    # BTC is in a sustained rally — strikes get breached more frequently.
+    btc_14d_return = 0.0
+    if spot_history_14d and len(spot_history_14d) > 1:
+        spot_14d_ago = spot_history_14d[0]
+        if spot_14d_ago > 0:
+            btc_14d_return = (spot - spot_14d_ago) / spot_14d_ago
+    _uptrend_regime = btc_14d_return > 0.10  # BTC up >10% in 14d = strong uptrend
 
     # Time-of-day liquidity filter: 02:00–12:00 UTC = low-liquidity window
     # (roughly 10pm–8am US Eastern). Kalshi is US-regulated; spreads widen
@@ -530,7 +543,28 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         exec_error = None
         order_id = None
 
-        if decision.action != "HOLD" and live:
+        # ── Post-decision signal filters (apply in both live and paper modes) ──
+        # These convert actionable signals to HOLD based on simulation findings.
+        _tech_score = agent_signals.get("TechnicalMarket", {}).get("score", 0.0)
+        if decision.action == "BUY_YES":
+            exec_status = "filtered"
+            exec_error = "yes_eliminated: YES trades show negative expected value across 90-day simulation (981 trades, -$1,406)"
+        elif decision.action == "BUY_NO" and _uptrend_regime and market.strike > spot:
+            exec_status = "filtered"
+            exec_error = (
+                f"regime_filter: BTC +{btc_14d_return:.1%} in 14d; "
+                f"above-spot NO adversarial in uptrend (strike=${market.strike:,.0f})"
+            )
+        elif decision.action == "BUY_NO" and _tech_score >= 0:
+            exec_status = "filtered"
+            exec_error = (
+                f"tech_gate: TechnicalMarket={_tech_score:+.3f} (not bearish); "
+                f"NO requires bearish technical confirmation (+8.8pp WR when negative)"
+            )
+
+        if exec_status == "filtered":
+            pass  # fall through to postmortem logging with exec_status="filtered"
+        elif decision.action != "HOLD" and live:
             # ── Gate 4: correlated NO cap — max 2 open NO positions per expiry ─
             _event_ticker = market.ticker.split('-')[0] + '-' + market.ticker.split('-')[1]
             if decision.action == "BUY_NO":
@@ -603,7 +637,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                     except Exception as exc:
                         exec_status = "error"
                         exec_error = str(exc)[:200]
-        elif decision.action != "HOLD":
+        elif exec_status != "filtered" and decision.action != "HOLD":
             exec_status = "paper"
 
         # ── Postmortem: log every decision ────────────────────────────────────
@@ -685,6 +719,8 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         "funding_rate_8h": round(funding_rate, 6),
         "funding_tilt": round(fund_tilt, 4),
         "momentum_trigger": round(momentum_trigger, 4),
+        "btc_14d_return": round(btc_14d_return, 4),
+        "uptrend_regime": _uptrend_regime,
         "min_strike_distance_pct": min_strike_dist,
         "results": results,
     }
