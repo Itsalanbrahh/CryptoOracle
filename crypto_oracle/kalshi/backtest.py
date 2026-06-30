@@ -219,8 +219,11 @@ async def run_backtest(
                 no_ask = min(0.97, (1.0 - market_yes) + spread)
 
                 # Agent belief = GBM + signal noise (agents think they see mispricing)
-                # Higher vol = more uncertainty = wider agent disagreement
-                agent_signal_scale = min(0.10, max(0.01, (vol - 0.30) * 0.12))
+                # Higher vol = more uncertainty = wider agent disagreement.
+                # Must be large enough to overcome the OTM spread (~0.03-0.05) plus
+                # min_edge=0.03, so needs to reach ~0.08+ at typical vol=0.65.
+                # min(0.25, 0.05 + vol*0.15) → ~0.15 at vol=0.65; ~0.20 at vol=1.0
+                agent_signal_scale = min(0.25, 0.05 + vol * 0.15)
                 # Use a deterministic pseudo-random signal based on candle index
                 _r = ((i * 7 + step * 13 + dir_sign * 31) % 1001) / 1000  # 0..1
                 signal = (_r * 2.0 - 1.0) * agent_signal_scale
