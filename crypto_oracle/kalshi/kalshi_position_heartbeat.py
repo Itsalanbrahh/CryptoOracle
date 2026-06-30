@@ -227,7 +227,15 @@ async def main() -> None:
             close_count = min(pos["count"], actual_count)
             close_side = actual_side  # close the side we actually hold
 
-            price_cents = int(round(action["close_price"] * 100))
+            # Kalshi's order API is YES-denominated for both buys and sells.
+            # action["close_price"] is NO-denominated for a NO position (used
+            # for PnL bookkeeping), so convert it the same way the buy path
+            # does. Sending the raw NO price posts the close at the complement
+            # level → never fills → stop-loss/take-profit silently fail.
+            if close_side == "yes":
+                price_cents = int(round(action["close_price"] * 100))
+            else:
+                price_cents = int(round((1.0 - action["close_price"]) * 100))
             resp = await client.close_position(
                 ticker=pos["ticker"],
                 count=close_count,

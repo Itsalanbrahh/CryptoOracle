@@ -370,7 +370,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     min_confidence = _env_float("KALSHI_MIN_CONFIDENCE", _env_float("POLYMARKET_MIN_CONFIDENCE", 0.52))
     max_daily_risk = _env_float("KALSHI_MAX_DAILY_RISK_USD", 20.0)
     max_entries_per_day = _env_int("KALSHI_MAX_ENTRIES_PER_DAY", 5)
-    min_balance = _env_float("KALSHI_MIN_BALANCE_USD", 2.0)
+    min_balance = _env_float("KALSHI_MIN_BALANCE_USD", 0.50)
     stop_loss_pct = _env_float("KALSHI_STOP_LOSS_PCT", 0.50)
     take_profit_pct = _env_float("KALSHI_TAKE_PROFIT_PCT", 0.70)
     rebalance_enabled = os.getenv("KALSHI_REBALANCE_ENABLED", "1").strip() == "1"
@@ -403,12 +403,17 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             # ── Scale position size with balance (5% pct, no hard cap) ─────────
             # Position = balance × position_pct — grows with the account.
             # E.g. $100 → $5, $240 → $12, $1,000 → $50. No cap.
+            # Floor is $0.20 (not $1.00) so a tiny account can still place a
+            # 1-contract order without the position exceeding the daily-risk
+            # cap. A $1 account previously floored at $1.00 while daily risk
+            # was $0.30 → every order was gate-blocked and nothing traded.
             position_size_pct = _env_float("KALSHI_POSITION_SIZE_PCT", 0.05)
-            max_position = max(1.0, round(balance_usd * position_size_pct, 2))
+            max_position = max(0.20, round(balance_usd * position_size_pct, 2))
             print(f"[Kalshi/SCAN] balance=${balance_usd:.2f} pct={position_size_pct:.0%} "
                   f"scaled_pos=${max_position:.2f}")
-            # Daily risk = 30% of balance — also scales
-            max_daily_risk = round(balance_usd * 0.30, 2)
+            # Daily risk = 30% of balance, floored at $1.00 so a sub-$3 account
+            # can actually deploy (30% of $1 is $0.30, below one position).
+            max_daily_risk = max(1.0, round(balance_usd * 0.30, 2))
             # Entries = balance / $5 per entry, min 5, max 48 (every 30min scan window)
             max_entries_per_day = max(5, min(48, int(balance_usd / 5)))
             print(f"[Kalshi/SCAN] daily_risk_cap=${max_daily_risk:.2f} entries_per_day={max_entries_per_day}")
@@ -492,7 +497,17 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             pos = action["pos"]
             try:
                 client = KalshiClient(key_id=os.getenv("KALSHI_API_KEY_ID", ""))
-                price_cents = int(round(action["close_price"] * 100))
+                # Kalshi's order API is YES-denominated for BOTH buys and sells
+                # (the buy path sends (1-no_ask)*100 for a NO and reconciles
+                # correctly). action["close_price"] is the NO-denominated sell
+                # price (for PnL bookkeeping), so convert it the same way the
+                # buy path does. Sending the raw NO price here posts the close
+                # at the complement level, so it never fills and stop-loss /
+                # take-profit silently fail — losers ride to settlement.
+                if pos["side"] == "yes":
+                    price_cents = int(round(action["close_price"] * 100))
+                else:
+                    price_cents = int(round((1.0 - action["close_price"]) * 100))
                 resp = await client.close_position(
                     ticker=pos["ticker"],
                     count=pos["count"],
