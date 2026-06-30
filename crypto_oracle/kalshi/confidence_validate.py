@@ -48,6 +48,24 @@ def _edge_bucket(edge: float) -> str:
 _EDGE_ORDER = ["0–2%", "2–5%", "5–10%", "10–20%", ">20%"]
 
 
+def _no_price_band(price: float) -> str:
+    """Bucket a NO contract entry price into a payoff band."""
+    if price < 0.15:
+        return "0.00–0.15"
+    if price < 0.25:
+        return "0.15–0.25"
+    if price < 0.35:
+        return "0.25–0.35"
+    if price < 0.50:
+        return "0.35–0.50"
+    if price < 0.70:
+        return "0.50–0.70"
+    return "0.70–1.00"
+
+
+_NO_BAND_ORDER = ["0.00–0.15", "0.15–0.25", "0.25–0.35", "0.35–0.50", "0.50–0.70", "0.70–1.00"]
+
+
 def main() -> None:
     from crypto_oracle.kalshi.postmortem import _LOG_PATH
     from crypto_oracle.kalshi import agent_tracker as at
@@ -150,6 +168,46 @@ def main() -> None:
         wr = d["wins"] / n
         pnl = d["pnl"]
         print(f"  {label:>6}  {n:>5}  {wr:>8.1%}  ${pnl:>7.2f}")
+
+    # ── NO price band: which payoff band actually made money ─────────────────
+    # This is the key report for a small account: a NO@0.30 (2.3:1) needs only
+    # ~31% win rate to break even, while a NO@0.85 (0.18:1) needs ~85%. Ranking
+    # bands by realized PnL shows where the real edge (and survivable variance) is.
+    no_resolved = [
+        e for e in resolved
+        if e.get("side") == "no" and e.get("entry_price") not in (None, 0)
+    ]
+    if no_resolved:
+        band_buckets: dict[str, dict] = defaultdict(
+            lambda: {"wins": 0, "total": 0, "pnl": 0.0, "payoff_sum": 0.0}
+        )
+        for e in no_resolved:
+            price = e["entry_price"]
+            label = _no_price_band(price)
+            b = band_buckets[label]
+            b["total"] += 1
+            b["pnl"] += e.get("resolved_pnl_usd") or 0.0
+            b["payoff_sum"] += e.get("payoff_ratio") or ((1.0 - price) / price if price else 0.0)
+            if e.get("resolved_itm"):
+                b["wins"] += 1
+
+        print(f"\n  NO PRICE BAND (which payoff band made money)")
+        print(f"  {'Band':>11}  {'N':>4}  {'WinRate':>8}  {'Payoff':>7}  {'Breakeven':>9}  {'PnL':>8}")
+        print(f"  {'-'*60}")
+        for label in _NO_BAND_ORDER:
+            if label not in band_buckets:
+                continue
+            d = band_buckets[label]
+            n = d["total"]
+            wr = d["wins"] / n
+            avg_payoff = d["payoff_sum"] / n
+            # Breakeven win rate for a payoff of b:1 is 1/(1+b)
+            breakeven = 1.0 / (1.0 + avg_payoff) if avg_payoff > 0 else 0.0
+            edge_flag = " ✓" if wr > breakeven else " ✗"
+            print(
+                f"  {label:>11}  {n:>4}  {wr:>8.1%}  {avg_payoff:>6.2f}:1  "
+                f"{breakeven:>9.1%}  ${d['pnl']:>7.2f}{edge_flag}"
+            )
 
     # ── GBM baseline calibration ────────────────────────────────────────────
     gbm_entries = [e for e in resolved if e.get("belief_yes") is not None]

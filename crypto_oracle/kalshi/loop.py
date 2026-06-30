@@ -748,5 +748,6 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         "btc_14d_return": round(btc_14d_return, 4),
         "uptrend_regime": _uptrend_regime,
         "min_strike_distance_pct": min_strike_dist,
+        "target_no_price": target_no_price,
         "results": results,
     }

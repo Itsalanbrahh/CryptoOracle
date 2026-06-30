@@ -93,6 +93,12 @@ def build_entry(
         "entry_price": entry_price,
         "position_usd": round(position_usd, 2),
         "profit_if_win": round(profit_if_win, 2) if profit_if_win is not None else None,
+        # Realized payoff ratio = win/risk on the contract. For a binary paying
+        # $1, this is (1 - price)/price regardless of side: NO@0.30 → 2.33:1,
+        # NO@0.88 → 0.14:1. Lets the calibration report rank NO price bands by
+        # which actually compounded the account.
+        "payoff_ratio": round((1.0 - entry_price) / entry_price, 3)
+        if entry_price not in (None, 0) else None,
         "order_id": order_id,
         # Agent signals
         "agent_signals": agent_signals,
