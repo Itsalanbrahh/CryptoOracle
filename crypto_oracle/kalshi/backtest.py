@@ -239,11 +239,13 @@ async def run_backtest(
                 else:
                     continue  # HOLD — no trade signal
 
-                # Determine outcome: spot at entry vs. simulated settlement
-                # Simulate settlement price: spot + random walk
-                # For simplicity: use next hour's close as proxy
-                if i + 1 < len(candles):
-                    settle_price = candles[i + 1]["close"]
+                # Determine outcome: use the candle at actual expiry, not just i+1.
+                # hours_to can range 2–72h; settling on i+1 (1h later) regardless
+                # inflates win rates for far-OTM NO trades and distorts PnL.
+                settle_offset = max(1, min(int(round(hours_to)), len(candles) - 1 - i))
+                settle_idx = i + settle_offset
+                if settle_idx < len(candles):
+                    settle_price = candles[settle_idx]["close"]
                 else:
                     settle_price = spot
 
@@ -252,7 +254,9 @@ async def run_backtest(
                 else:
                     won = settle_price < strike
 
-                pnl = round(profit_if_win - position_usd, 2) if won else round(-position_usd, 2)
+                # profit_if_win is already the NET gain (count * (1 - exec_price)).
+                # Only deduct position_usd on a loss; do NOT subtract it again on a win.
+                pnl = round(profit_if_win, 2) if won else round(-position_usd, 2)
 
                 trade = {
                     "ts": ts,
@@ -262,6 +266,7 @@ async def run_backtest(
                     "edge": round(edge, 4),
                     "confidence": round(confidence, 4),
                     "hours_to_expiry": round(hours_to, 1),
+                    "settle_candle_offset": settle_offset,
                     "position_usd": position_usd,
                     "profit_if_win": profit_if_win,
                     "won": won,
@@ -284,6 +289,12 @@ async def run_backtest(
     gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     gross_loss = sum(t["pnl"] for t in trades if t["pnl"] < 0)
 
+    # Per-side breakdown — critical for understanding YES/NO asymmetry
+    yes_trades = [t for t in trades if t["action"] == "BUY_YES"]
+    no_trades = [t for t in trades if t["action"] == "BUY_NO"]
+    yes_wins = sum(1 for t in yes_trades if t["won"])
+    no_wins = sum(1 for t in no_trades if t["won"])
+
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "days_backtested": days,
@@ -300,6 +311,22 @@ async def run_backtest(
         "max_drawdown_pct": 0.0,
         "best_trade": max(trades, key=lambda t: t["pnl"])["pnl"] if trades else 0,
         "worst_trade": min(trades, key=lambda t: t["pnl"])["pnl"] if trades else 0,
+        "yes_trades": len(yes_trades),
+        "yes_wins": yes_wins,
+        "yes_win_rate": round(yes_wins / len(yes_trades), 4) if yes_trades else 0,
+        "yes_pnl": round(sum(t["pnl"] for t in yes_trades), 2),
+        "yes_avg_exec_price": round(
+            sum(t["market_yes_price"] for t in yes_trades) / len(yes_trades), 4
+        ) if yes_trades else 0,
+        "no_trades": len(no_trades),
+        "no_wins": no_wins,
+        "no_win_rate": round(no_wins / len(no_trades), 4) if no_trades else 0,
+        "no_pnl": round(sum(t["pnl"] for t in no_trades), 2),
+        "no_avg_exec_price": round(
+            sum(1.0 - t["market_yes_price"] for t in no_trades) / len(no_trades), 4
+        ) if no_trades else 0,
+        "yes_pct": round(len(yes_trades) / total, 4) if total else 0,
+        "no_pct": round(len(no_trades) / total, 4) if total else 0,
         "settings": {
             "min_edge": min_edge,
             "min_confidence": min_confidence,
@@ -353,11 +380,195 @@ async def run_backtest(
                          for k, v in sorted(conf_buckets.items())},
     }
 
+    # Add TTE bucket breakdown — shows how settlement timing affects win rate
+    tte_buckets: dict[str, dict] = {}
+    for t in trades:
+        tte_key = f"{int(t['hours_to_expiry'])}h"
+        if tte_key not in tte_buckets:
+            tte_buckets[tte_key] = {"count": 0, "wins": 0, "pnl": 0.0,
+                                    "yes": 0, "no": 0}
+        b = tte_buckets[tte_key]
+        b["count"] += 1
+        b["pnl"] = round(b["pnl"] + t["pnl"], 2)
+        if t["won"]:
+            b["wins"] += 1
+        if t["action"] == "BUY_YES":
+            b["yes"] += 1
+        else:
+            b["no"] += 1
+    result["tte_buckets"] = {
+        k: {**v, "win_rate": round(v["wins"] / v["count"], 3) if v["count"] else 0}
+        for k, v in sorted(tte_buckets.items(), key=lambda x: int(x[0].rstrip("h")))
+    }
+
     # Save to file
     if output_path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(result, indent=2, default=str))
         print(f"Backtest saved to {path}")
+
+    return result
+
+
+async def run_agent_backtest(
+    agent_name: str = "MeanReversion",
+    days: int = _DEFAULT_DAYS,
+    min_confidence: float = 0.0,
+    min_score: float = 0.0,
+    output_path: str | None = None,
+) -> dict:
+    """Replay a single named agent on historical data using its actual logic.
+
+    Unlike run_backtest() which uses GBM + pseudo-noise for all agents,
+    this function instantiates the real agent class, feeds it actual hourly
+    candles via a mock market object, and records its per-trade decisions.
+
+    Supported agent_name values: MeanReversion, MomentumContinuation,
+    VolatilitySnapback.
+
+    Settlement uses the candle at hours_to_expiry (same fix as run_backtest).
+    PnL: profit_if_win on win, -position_usd on loss (no double-deduction).
+    """
+    from .agents.edge_agents import (
+        MeanReversionAgent,
+        MomentumContinuationAgent,
+        VolatilitySnapbackAgent,
+    )
+
+    _AGENT_MAP = {
+        "MeanReversion": MeanReversionAgent,
+        "MomentumContinuation": MomentumContinuationAgent,
+        "VolatilitySnapback": VolatilitySnapbackAgent,
+    }
+
+    if agent_name not in _AGENT_MAP:
+        return {"error": f"Unknown agent '{agent_name}'. Choose from: {list(_AGENT_MAP)}"}
+
+    agent = _AGENT_MAP[agent_name]()
+    candles = await fetch_historical_btc(days=days)
+    if len(candles) < 48:
+        return {"error": f"Not enough data: {len(candles)} candles"}
+
+    print(f"Agent backtest ({agent_name}): {len(candles)} candles")
+
+    # We monkey-patch fetch_historical_btc inside edge_agents so the agent
+    # sees the same cached candles we already have (avoids re-fetching).
+    import crypto_oracle.kalshi.backtest as _bt_module
+    _orig = _bt_module.fetch_historical_btc
+
+    async def _cached_fetch(days=_DEFAULT_DAYS):
+        return candles
+
+    _bt_module.fetch_historical_btc = _cached_fetch
+
+    trades: list[dict] = []
+    tte_default = 6.0  # agent scores don't carry TTE; use a fixed 6h horizon
+
+    try:
+        for i in range(24, len(candles)):  # need 24h warmup for MA-based agents
+            spot = candles[i]["close"]
+            ts = candles[i]["ts"]
+
+            # Provide a minimal market proxy — agents only use candle history
+            proxy = type("MockMarket", (), {"strike": spot, "hours_to_expiry": tte_default})()
+
+            result_sig = await agent.run(proxy)
+            score = result_sig.get("score", 0.0)
+            confidence = result_sig.get("confidence", 0.0)
+
+            if abs(score) < min_score or confidence < min_confidence:
+                continue  # agent abstains
+
+            # Translate score to YES/NO: positive = bullish = BUY_YES
+            if score > 0:
+                action = "BUY_YES"
+                exec_price = 0.55 + abs(score) * 0.10  # rough proxy: stronger signal → less cheap YES
+                exec_price = min(0.90, max(0.10, exec_price))
+            else:
+                action = "BUY_NO"
+                exec_price = 0.15 + abs(score) * 0.10
+                exec_price = min(0.90, max(0.10, exec_price))
+
+            count = max(1, int(5.0 / exec_price))
+            position_usd = round(count * exec_price, 2)
+            profit_if_win = round(count * (1.0 - exec_price), 2)
+
+            # Settle at TTE candle
+            settle_offset = max(1, min(int(round(tte_default)), len(candles) - 1 - i))
+            settle_price = candles[i + settle_offset]["close"]
+
+            # Approximate strike: current spot (agent bets on direction, not specific strike)
+            strike = spot
+            if action == "BUY_YES":
+                won = settle_price > strike  # price went up
+            else:
+                won = settle_price <= strike  # price did not go up
+
+            pnl = round(profit_if_win, 2) if won else round(-position_usd, 2)
+
+            trades.append({
+                "ts": ts,
+                "spot_entry": round(spot, 2),
+                "action": action,
+                "score": round(score, 4),
+                "confidence": round(confidence, 4),
+                "exec_price": round(exec_price, 4),
+                "position_usd": position_usd,
+                "profit_if_win": profit_if_win,
+                "settle_offset": settle_offset,
+                "settle_price": round(settle_price, 2),
+                "won": won,
+                "pnl": pnl,
+                "reasoning": result_sig.get("reasoning", ""),
+            })
+    finally:
+        _bt_module.fetch_historical_btc = _orig
+
+    if not trades:
+        return {"error": f"No trades from {agent_name} — try lowering min_score/min_confidence"}
+
+    total = len(trades)
+    wins = sum(1 for t in trades if t["won"])
+    yes_trades = [t for t in trades if t["action"] == "BUY_YES"]
+    no_trades = [t for t in trades if t["action"] == "BUY_NO"]
+    yes_wins = sum(1 for t in yes_trades if t["won"])
+    no_wins = sum(1 for t in no_trades if t["won"])
+    total_pnl = sum(t["pnl"] for t in trades)
+
+    summary = {
+        "agent": agent_name,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "days_backtested": days,
+        "total_trades": total,
+        "wins": wins,
+        "win_rate": round(wins / total, 4),
+        "total_pnl": round(total_pnl, 2),
+        "avg_pnl_per_trade": round(total_pnl / total, 2),
+        "yes_trades": len(yes_trades),
+        "yes_wins": yes_wins,
+        "yes_win_rate": round(yes_wins / len(yes_trades), 4) if yes_trades else 0,
+        "yes_pnl": round(sum(t["pnl"] for t in yes_trades), 2),
+        "no_trades": len(no_trades),
+        "no_wins": no_wins,
+        "no_win_rate": round(no_wins / len(no_trades), 4) if no_trades else 0,
+        "no_pnl": round(sum(t["pnl"] for t in no_trades), 2),
+        "yes_pct": round(len(yes_trades) / total, 4) if total else 0,
+        "no_pct": round(len(no_trades) / total, 4) if total else 0,
+        "abstain_rate": "not tracked (only fired trades recorded)",
+    }
+
+    print(f"\n{agent_name} standalone results ({days}d):")
+    print(f"  Trades: {total} | WR: {summary['win_rate']:.1%} | PnL: ${total_pnl:.2f}")
+    print(f"  YES: {len(yes_trades)} ({summary['yes_pct']:.1%}) WR={summary['yes_win_rate']:.1%} PnL=${summary['yes_pnl']:.2f}")
+    print(f"  NO:  {len(no_trades)} ({summary['no_pct']:.1%}) WR={summary['no_win_rate']:.1%} PnL=${summary['no_pnl']:.2f}")
+
+    result = {"summary": summary, "trades": trades}
+
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(result, indent=2, default=str))
+        print(f"Agent backtest saved to {path}")
 
     return result
