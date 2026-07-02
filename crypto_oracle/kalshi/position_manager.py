@@ -126,12 +126,19 @@ def get_entry_count_today() -> int:
 
 
 def get_today_deployed_usd() -> float:
-    """Sum of entry costs (in dollars) for positions opened today."""
+    """Sum of entry costs (in dollars) for bot-placed positions opened today.
+    Excludes manual trades and never-filled orders.
+    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     total_cents = sum(
         p["entry_price"] * p["count"]
         for p in _load_all()
-        if p.get("entered_at", "").startswith(today) and not _never_filled(p)
+        if (
+            p.get("entered_at", "").startswith(today)
+            and not _never_filled(p)
+            and p.get("confidence", 0) > 0  # bot-placed only
+            and p.get("edge", 0) > 0         # bot-placed only
+        )
     )
     return round(total_cents / 100.0, 2)
 
