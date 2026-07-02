@@ -113,15 +113,20 @@ def _never_filled(p: dict) -> bool:
 
 
 def get_entry_count_today() -> int:
-    """Number of new positions opened today (for entry cap).
+    """Number of bot-placed positions opened today (for entry cap).
 
-    Never-filled entries don't count — an order that rested and was canceled
-    shouldn't consume the daily entry budget.
+    Excludes manual trades and never-filled entries — an order that rested
+    and was canceled shouldn't consume the daily entry budget.
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return sum(
         1 for p in _load_all()
-        if p.get("entered_at", "").startswith(today) and not _never_filled(p)
+        if (
+            p.get("entered_at", "").startswith(today)
+            and not _never_filled(p)
+            and p.get("confidence", 0) > 0  # bot-placed only
+            and p.get("edge", 0) > 0         # bot-placed only
+        )
     )
 
 
