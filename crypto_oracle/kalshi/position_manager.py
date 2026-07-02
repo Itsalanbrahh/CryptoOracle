@@ -107,19 +107,31 @@ def get_closed_today() -> list[dict]:
     ]
 
 
+def _never_filled(p: dict) -> bool:
+    """True if this entry's order never executed — it was never a real position."""
+    return (p.get("close_reason") or "").startswith("entry_never_filled")
+
+
 def get_entry_count_today() -> int:
-    """Number of new positions opened today (for entry cap)."""
+    """Number of new positions opened today (for entry cap).
+
+    Never-filled entries don't count — an order that rested and was canceled
+    shouldn't consume the daily entry budget.
+    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return sum(1 for p in _load_all() if p.get("entered_at", "").startswith(today))
+    return sum(
+        1 for p in _load_all()
+        if p.get("entered_at", "").startswith(today) and not _never_filled(p)
+    )
 
 
 def get_today_deployed_usd() -> float:
-    """Sum of entry costs for positions opened today."""
+    """Sum of entry costs for positions opened today (excluding never-filled)."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return round(sum(
         p["entry_price"] * p["count"]
         for p in _load_all()
-        if p.get("entered_at", "").startswith(today)
+        if p.get("entered_at", "").startswith(today) and not _never_filled(p)
     ), 2)
 
 
@@ -195,14 +207,22 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
     for p in local_positions:
         ticker = p["ticker"]
         if not p.get("closed") and ticker not in api_tickers:
-            # Position no longer on API → settled or fully closed
             p["closed"] = True
             p["closed_at"] = _now_iso()
-            p["close_reason"] = "settled (no longer on API)"
-            # Calculate best-estimate PnL: NO positions at entry price (stake lost if OTM)
-            # We can't determine ITM/OTM without settlement data, so leave realized_pnl
-            # as None — the heartbeat will resolve it with current BTC price proxy
-            p["realized_pnl"] = None
+            if p.get("order_pending"):
+                # Entry order never executed (resting maker order that was
+                # canceled or expired). NOT a settled position — must not be
+                # PnL-logged by the heartbeat or counted by the calibration.
+                # If the order actually fills later, the reopen branch below
+                # restores it when it appears on the API.
+                p["close_reason"] = "entry_never_filled (order did not execute)"
+                p["realized_pnl"] = None
+            else:
+                # Filled position no longer on API → settled or fully closed.
+                # Leave realized_pnl as None — the heartbeat resolves it with
+                # the current BTC price proxy.
+                p["close_reason"] = "settled (no longer on API)"
+                p["realized_pnl"] = None
             removed += 1
         elif p.get("closed") and ticker in api_tickers:
             # Position was incorrectly marked closed but is still alive on API → re-open
@@ -213,6 +233,7 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
             p["close_price"] = None
             p["realized_pnl"] = None
             p["count"] = ap["count"]
+            p["order_pending"] = False  # it's on the API — the fill happened
             if p["entry_price"] == 0 and ap["entry_price"] > 0:
                 p["entry_price"] = ap["entry_price"]
             reopened += 1
@@ -220,6 +241,7 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
             # Update count/entry from API in case of partial fills
             ap = api_by_ticker[ticker]
             p["count"] = ap["count"]
+            p["order_pending"] = False  # confirmed filled
             if p["entry_price"] == 0 and ap["entry_price"] > 0:
                 p["entry_price"] = ap["entry_price"]
             updated += 1

@@ -28,6 +28,29 @@ def _gbm_range_prob(spot: float, floor: float, cap: float, hours_to_expiry: floa
     return _gbm_prob(spot, floor, hours_to_expiry, annual_vol) - _gbm_prob(spot, cap, hours_to_expiry, annual_vol)
 
 
+# ── Kalshi trading fees ──────────────────────────────────────────────────────
+# Taker fee = ceil(0.07 × count × P × (1−P)) in cents, charged on execution.
+# Maker fee = 25% of the taker rate (June 2026 schedule); we conservatively
+# round UP to the next cent even though small maker fees often round to $0.00.
+# The ceil makes 1-contract orders proportionally the most expensive — exactly
+# what a small account places — so fees MUST be part of the edge gate.
+_TAKER_FEE_RATE = 0.07
+_MAKER_FEE_RATE = 0.0175
+
+
+def _fee_total(price: float, count: int, maker: bool) -> float:
+    """Total Kalshi trading fee in dollars for an order of `count` contracts."""
+    if price <= 0.0 or price >= 1.0 or count <= 0:
+        return 0.0
+    rate = _MAKER_FEE_RATE if maker else _TAKER_FEE_RATE
+    return math.ceil(rate * count * price * (1.0 - price) * 100.0) / 100.0
+
+
+def _fee_per_contract(price: float, maker: bool) -> float:
+    """Worst-case per-contract fee (count=1, where ceil-to-cent bites hardest)."""
+    return _fee_total(price, 1, maker)
+
+
 @dataclass
 class KalshiDecision:
     ticker: str
@@ -58,6 +81,8 @@ def decide_kalshi_trade(
     min_strike_distance_pct: float = 0.0,   # skip if strike too close to spot
     momentum_trigger: float = 0.0,          # +1 = strong uptrend, -1 = strong downtrend
     divergence_cut: float = 1.0,            # multiplier for position size (1.0 = no cut)
+    maker_mode: bool = True,                # rest inside the spread (maker) vs lift the ask (taker)
+    agg_tilt: float = 0.08,                 # max belief tilt from agent aggregate (dollars of prob)
 ) -> KalshiDecision:
     """
     Decide whether to buy YES or NO on a Kalshi BTC contract.
@@ -65,14 +90,24 @@ def decide_kalshi_trade(
     belief_yes is anchored to GBM P(BTC > strike at expiry), then tilted by
     the agent aggregate signal (±15%). This prevents the model from fighting
     efficient market pricing near expiry.
+
+    maker_mode=True prices entries one cent inside the spread (or joins the
+    bid on a 1-cent book) so fills are maker fills: ~75% lower fees and the
+    spread is captured instead of paid. Unfilled maker orders are canceled by
+    the next scan's stale-entry cleanup, so a stale signal never fills late.
     """
+    # The tilt is deliberately small: at 1–24h horizons even sophisticated
+    # models barely beat coin-flip direction accuracy, so a large tilt
+    # (the old ±0.15) mostly MANUFACTURED edges out of ensemble noise — the
+    # perceived edge was the tilt itself, not a market mispricing. Keep the
+    # anchor (GBM / market structure) in charge and let agents nudge, not steer.
     if spot > 0 and market.strike > 0:
         if market.is_range and market.cap_strike:
             gbm = _gbm_range_prob(spot, market.strike, market.cap_strike, market.hours_to_expiry, annual_vol)
-            belief_yes = max(0.02, min(0.98, gbm + aggregate * 0.05))
+            belief_yes = max(0.02, min(0.98, gbm + aggregate * min(agg_tilt, 0.05)))
         else:
             gbm = _gbm_prob(spot, market.strike, market.hours_to_expiry, annual_vol)
-            belief_yes = max(0.02, min(0.98, gbm + aggregate * 0.15))
+            belief_yes = max(0.02, min(0.98, gbm + aggregate * agg_tilt))
     else:
         belief_yes = max(0.02, min(0.98, (aggregate + 1.0) / 2.0))
     belief_no = 1.0 - belief_yes
@@ -83,9 +118,27 @@ def decide_kalshi_trade(
     market_yes = market.mid      # reference only, not used for edge gate
     market_no = 1.0 - market_yes
 
-    # Edge against execution price, not mid: what we'd actually get after spread
-    exec_edge_yes = belief_yes - market.yes_ask
-    exec_edge_no = belief_no - market.no_ask
+    # ── Execution price: maker (rest inside the spread) vs taker (lift ask) ──
+    # Maker: improve the bid by 1¢ when the spread allows, else join the bid.
+    # Never cross the ask — crossing turns the order into a taker fill.
+    if maker_mode:
+        yes_bid = max(0.01, market.yes_bid)
+        yes_exec = max(0.01, min(market.yes_ask - 0.01, yes_bid + 0.01))
+        no_bid = max(0.01, 1.0 - market.yes_ask)
+        no_exec = max(0.01, min(market.no_ask - 0.01, no_bid + 0.01))
+    else:
+        yes_exec = market.yes_ask
+        no_exec = market.no_ask
+
+    # Per-contract trading fee at the intended execution (worst-case count=1)
+    fee_yes = _fee_per_contract(yes_exec, maker=maker_mode)
+    fee_no = _fee_per_contract(no_exec, maker=maker_mode)
+
+    # Edge net of spread AND fee: what we would actually keep on a win.
+    # Before fees were modeled, every trade with believed edge below the fee
+    # (2–7% of stake depending on price) was a slow bleed that the gate passed.
+    exec_edge_yes = belief_yes - yes_exec - fee_yes
+    exec_edge_no = belief_no - no_exec - fee_no
 
     # Keep mid-based edge for display/reference
     edge_yes = belief_yes - market_yes
@@ -127,7 +180,7 @@ def decide_kalshi_trade(
                 f"momentum={momentum_trigger:.2f}: strong downtrend, skipping YES "
                 f"(would bet against momentum)"
             )
-        exec_price = market.yes_ask   # buy at the ask
+        exec_price = yes_exec
         exec_price_cents = int(round(exec_price * 100))
         # Conviction-weighted position sizing: scales $2–5 based on confidence × edge
         # 50% confidence + 0.05 edge → ~$2.00   |   60% confidence + 0.15 edge → $5.00
@@ -138,7 +191,8 @@ def decide_kalshi_trade(
             position_usd = position_usd * divergence_cut
         count = max(1, int(position_usd / exec_price))
         actual_position = round(count * exec_price, 2)
-        profit_if_win = round(count * (1.0 - exec_price), 2)
+        fee_paid = _fee_total(exec_price, count, maker_mode)
+        profit_if_win = round(count * (1.0 - exec_price) - fee_paid, 2)
         return KalshiDecision(
             ticker=market.ticker, strike=market.strike,
             action="BUY_YES", side="yes",
@@ -148,7 +202,8 @@ def decide_kalshi_trade(
             gbm_baseline=belief_yes,
             reasoning=(
                 f"{'range' if market.is_range else 'dir'} gbm={belief_yes:.2f} vol={annual_vol:.0%} "
-                f"market={market_yes:.2f} edge={exec_edge_yes:.3f} tte={market.hours_to_expiry:.1f}h"
+                f"market={market_yes:.2f} edge={exec_edge_yes:.3f} fee=${fee_paid:.2f} "
+                f"{'maker' if maker_mode else 'taker'} tte={market.hours_to_expiry:.1f}h"
             ),
         )
     else:
@@ -158,7 +213,7 @@ def decide_kalshi_trade(
                 f"momentum={momentum_trigger:.2f}: strong uptrend, skipping NO "
                 f"(would bet against momentum)"
             )
-        exec_price = market.no_ask
+        exec_price = no_exec
         exec_price_cents = int(round((1.0 - exec_price) * 100))
         # Conviction-weighted position sizing: scales $2–5 based on confidence × edge
         conviction_score = max(0.35, min(1.0, (confidence - 0.50) * 8 + exec_edge_no * 5))
@@ -175,7 +230,8 @@ def decide_kalshi_trade(
             position_usd = position_usd * divergence_cut
         count = max(1, int(position_usd / exec_price))
         actual_position = round(count * exec_price, 2)
-        profit_if_win = round(count * (1.0 - exec_price), 2)
+        fee_paid = _fee_total(exec_price, count, maker_mode)
+        profit_if_win = round(count * (1.0 - exec_price) - fee_paid, 2)
         return KalshiDecision(
             ticker=market.ticker, strike=market.strike,
             action="BUY_NO", side="no",
@@ -185,6 +241,7 @@ def decide_kalshi_trade(
             gbm_baseline=belief_yes,
             reasoning=(
                 f"{'range' if market.is_range else 'dir'} gbm_yes={belief_yes:.2f} vol={annual_vol:.0%} "
-                f"belief_no={belief_no:.2f} market_no={market_no:.2f} edge={exec_edge_no:.3f} tte={market.hours_to_expiry:.1f}h"
+                f"belief_no={belief_no:.2f} market_no={market_no:.2f} edge={exec_edge_no:.3f} "
+                f"fee=${fee_paid:.2f} {'maker' if maker_mode else 'taker'} tte={market.hours_to_expiry:.1f}h"
             ),
         )

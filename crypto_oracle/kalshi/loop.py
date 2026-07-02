@@ -387,6 +387,13 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     rebalance_edge_mult = _env_float("KALSHI_REBALANCE_EDGE_MULTIPLIER", 1.5)
     rebalance_min_hold = _env_float("KALSHI_REBALANCE_MIN_HOLD_MINUTES", 30.0)
     min_strike_dist = _env_float("KALSHI_MIN_STRIKE_DISTANCE_PCT", 2.0)
+    # Maker mode: rest entries inside the spread instead of lifting the ask.
+    # ~75% lower fees, captures the spread; unfilled orders are canceled by the
+    # stale-entry cleanup each scan. Set KALSHI_MAKER_MODE=0 for taker fills.
+    maker_mode = os.getenv("KALSHI_MAKER_MODE", "1").strip() == "1"
+    # Max belief tilt from the agent aggregate (in probability dollars).
+    # Down from 0.15: a big tilt from a ~coin-flip ensemble manufactures edges.
+    agg_tilt = _env_float("KALSHI_AGG_TILT", 0.08)
 
     # ── Daily entry state (uses position manager for persistence) ─────────────
     entries_today = pm.get_entry_count_today()
@@ -495,6 +502,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                     annual_vol=annual_vol, max_position_usd=max_position,
                     min_edge=0.01, min_confidence=0.0,
                     min_strike_distance_pct=min_strike_dist,
+                    maker_mode=maker_mode,
                 ) for m in selected[:4]
             )),
             default=0.0,
@@ -587,6 +595,8 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             min_strike_distance_pct=min_strike_dist,
             momentum_trigger=momentum_trigger,
             divergence_cut=divergence_cut,
+            maker_mode=maker_mode,
+            agg_tilt=agg_tilt,
         )
 
         exec_status = "hold"
@@ -669,6 +679,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                         trades_executed += 1
                         total_deployed += decision.position_usd
                         # Save position for tracking & stop-loss/take-profit
+                        _order_status = (resp.get("order") or {}).get("status", "")
                         pos = pm.make_position(
                             ticker=decision.ticker,
                             side=decision.side,
@@ -681,6 +692,12 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                             confidence=confidence,
                             spot_at_entry=spot,
                         )
+                        # Track fill state: a resting (maker) order is NOT a
+                        # position yet. sync_from_kalshi clears the flag when
+                        # the fill appears on the API; if it never fills, the
+                        # entry is marked entry_never_filled instead of being
+                        # phantom-logged as a settled (losing) position.
+                        pos["order_pending"] = _order_status != "executed"
                         pm.save_new_position(pos)
                         entries_today = pm.get_entry_count_today()
                         deployed_today = pm.get_today_deployed_usd()
