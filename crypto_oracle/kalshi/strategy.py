@@ -83,6 +83,7 @@ def decide_kalshi_trade(
     divergence_cut: float = 1.0,            # multiplier for position size (1.0 = no cut)
     maker_mode: bool = True,                # rest inside the spread (maker) vs lift the ask (taker)
     agg_tilt: float = 0.08,                 # max belief tilt from agent aggregate (dollars of prob)
+    implied_prob: float | None = None,      # options-implied P(YES) anchor; preferred over GBM when set
 ) -> KalshiDecision:
     """
     Decide whether to buy YES or NO on a Kalshi BTC contract.
@@ -100,14 +101,29 @@ def decide_kalshi_trade(
     # models barely beat coin-flip direction accuracy, so a large tilt
     # (the old ±0.15) mostly MANUFACTURED edges out of ensemble noise — the
     # perceived edge was the tilt itself, not a market mispricing. Keep the
-    # anchor (GBM / market structure) in charge and let agents nudge, not steer.
+    # anchor in charge and let agents nudge, not steer.
+    #
+    # Anchor preference: options-implied probability (Deribit IV surface —
+    # the same source professionals price this ladder from) when available;
+    # homegrown realized-vol GBM only as fallback. With the implied anchor,
+    # "edge" means Kalshi's quote diverges from professional pricing — the
+    # documented profitable pattern — rather than from our own model.
+    anchor_src = "gbm"
     if spot > 0 and market.strike > 0:
         if market.is_range and market.cap_strike:
-            gbm = _gbm_range_prob(spot, market.strike, market.cap_strike, market.hours_to_expiry, annual_vol)
-            belief_yes = max(0.02, min(0.98, gbm + aggregate * min(agg_tilt, 0.05)))
+            if implied_prob is not None:
+                anchor = implied_prob
+                anchor_src = "iv"
+            else:
+                anchor = _gbm_range_prob(spot, market.strike, market.cap_strike, market.hours_to_expiry, annual_vol)
+            belief_yes = max(0.02, min(0.98, anchor + aggregate * min(agg_tilt, 0.05)))
         else:
-            gbm = _gbm_prob(spot, market.strike, market.hours_to_expiry, annual_vol)
-            belief_yes = max(0.02, min(0.98, gbm + aggregate * agg_tilt))
+            if implied_prob is not None:
+                anchor = implied_prob
+                anchor_src = "iv"
+            else:
+                anchor = _gbm_prob(spot, market.strike, market.hours_to_expiry, annual_vol)
+            belief_yes = max(0.02, min(0.98, anchor + aggregate * agg_tilt))
     else:
         belief_yes = max(0.02, min(0.98, (aggregate + 1.0) / 2.0))
     belief_no = 1.0 - belief_yes
@@ -201,7 +217,7 @@ def decide_kalshi_trade(
             confidence=confidence, edge=exec_edge_yes,
             gbm_baseline=belief_yes,
             reasoning=(
-                f"{'range' if market.is_range else 'dir'} gbm={belief_yes:.2f} vol={annual_vol:.0%} "
+                f"{'range' if market.is_range else 'dir'} anchor={anchor_src} belief={belief_yes:.2f} vol={annual_vol:.0%} "
                 f"market={market_yes:.2f} edge={exec_edge_yes:.3f} fee=${fee_paid:.2f} "
                 f"{'maker' if maker_mode else 'taker'} tte={market.hours_to_expiry:.1f}h"
             ),
@@ -240,7 +256,7 @@ def decide_kalshi_trade(
             confidence=confidence, edge=exec_edge_no,
             gbm_baseline=belief_yes,
             reasoning=(
-                f"{'range' if market.is_range else 'dir'} gbm_yes={belief_yes:.2f} vol={annual_vol:.0%} "
+                f"{'range' if market.is_range else 'dir'} anchor={anchor_src} belief_yes={belief_yes:.2f} vol={annual_vol:.0%} "
                 f"belief_no={belief_no:.2f} market_no={market_no:.2f} edge={exec_edge_no:.3f} "
                 f"fee=${fee_paid:.2f} {'maker' if maker_mode else 'taker'} tte={market.hours_to_expiry:.1f}h"
             ),

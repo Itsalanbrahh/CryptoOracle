@@ -16,6 +16,7 @@ from crypto_oracle.polymarket.agents import (
     fetch_spot_history,
 )
 from .client import KalshiClient
+from .deribit import implied_prob_above
 from .market_data import fetch_funding_rate, fetch_realized_vol, funding_tilt
 from .markets import KalshiMarket, fetch_btc_markets, fetch_btc_range_markets, select_target_markets
 from .strategy import KalshiDecision, decide_kalshi_trade
@@ -394,6 +395,10 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # Max belief tilt from the agent aggregate (in probability dollars).
     # Down from 0.15: a big tilt from a ~coin-flip ensemble manufactures edges.
     agg_tilt = _env_float("KALSHI_AGG_TILT", 0.08)
+    # Anchor beliefs to Deribit options-implied probabilities (the source the
+    # professionals price this ladder from); falls back to GBM when the chain
+    # is unavailable. Set KALSHI_DERIBIT_ANCHOR=0 to force GBM-only.
+    use_deribit = os.getenv("KALSHI_DERIBIT_ANCHOR", "1").strip() == "1"
 
     # ── Daily entry state (uses position manager for persistence) ─────────────
     entries_today = pm.get_entry_count_today()
@@ -583,6 +588,20 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         tilted_aggregate = max(-1.0, min(1.0, aggregate + fund_tilt))
         # Dampen confidence during low-liquidity hours
         confidence = max(0.20, min(0.95, confidence * _liquidity_conf_mult))
+        # Options-implied anchor (chain is cached — one HTTP call per scan).
+        # Range markets: P(floor < BTC < cap) = P(>floor) − P(>cap).
+        implied_prob = None
+        if use_deribit:
+            try:
+                if market.is_range and market.cap_strike:
+                    p_floor = await implied_prob_above(market.strike, market.hours_to_expiry, spot)
+                    p_cap = await implied_prob_above(market.cap_strike, market.hours_to_expiry, spot)
+                    if p_floor is not None and p_cap is not None:
+                        implied_prob = max(0.0, p_floor - p_cap)
+                else:
+                    implied_prob = await implied_prob_above(market.strike, market.hours_to_expiry, spot)
+            except Exception:
+                implied_prob = None  # fall back to GBM anchor
         decision = decide_kalshi_trade(
             market,
             aggregate=tilted_aggregate,
@@ -597,6 +616,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             divergence_cut=divergence_cut,
             maker_mode=maker_mode,
             agg_tilt=agg_tilt,
+            implied_prob=implied_prob,
         )
 
         exec_status = "hold"
