@@ -18,7 +18,7 @@ re-running refreshes those lines without touching the rest of your crontab.
 | --- | --- | --- | --- |
 | Entry scan | every 30 min (`*/30 * * * *`) | `kalshi_live_trade.sh` | Runs the 13-agent ensemble and places NO trades that clear the gates. |
 | Position heartbeat | every 15 min (`*/15 * * * *`) | `kalshi_position_heartbeat.sh` | Stop-loss / take-profit / expiry settlement on open positions. |
-| Confidence calibration | daily 18:00 (`0 18 * * *`) | `kalshi_confidence_calibration.sh` | Reconciles resolved trades, then prints the calibration report incl. the NO-price-band breakdown. |
+| Confidence calibration | daily 18:00 (`0 18 * * *`) | `kalshi_confidence_calibration.sh` | Reconciles live trades with the API, resolves paper/filtered decisions against actual BTC settlement (`resolve_paper_trades.py`), then prints the calibration report: confidence buckets, NO-price bands, filter counterfactuals, GBM calibration. |
 
 Override any schedule via env when installing, e.g.:
 
