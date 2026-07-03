@@ -84,6 +84,7 @@ def decide_kalshi_trade(
     maker_mode: bool = True,                # rest inside the spread (maker) vs lift the ask (taker)
     agg_tilt: float = 0.08,                 # max belief tilt from agent aggregate (dollars of prob)
     implied_prob: float | None = None,      # options-implied P(YES) anchor; preferred over GBM when set
+    momentum_block: float = 0.2,            # block counter-trend trades when |6h momentum trigger| exceeds this
 ) -> KalshiDecision:
     """
     Decide whether to buy YES or NO on a Kalshi BTC contract.
@@ -190,8 +191,10 @@ def decide_kalshi_trade(
         return _hold(f"edge insufficient (yes={exec_edge_yes:.3f}, no={exec_edge_no:.3f})")
 
     if buy_yes:
-        # ── Momentum gate: don't buy YES in a strong downtrend ─────────────
-        if momentum_trigger < -0.5:
+        # ── Momentum gate: don't buy YES against a downtrend ───────────────
+        # Short-horizon momentum persists (documented at minute-to-hour
+        # scales); counter-trend entries need the trend to reverse first.
+        if momentum_trigger < -momentum_block:
             return _hold(
                 f"momentum={momentum_trigger:.2f}: strong downtrend, skipping YES "
                 f"(would bet against momentum)"
@@ -223,8 +226,12 @@ def decide_kalshi_trade(
             ),
         )
     else:
-        # ── Momentum gate: don't buy NO in a strong uptrend ────────────────
-        if momentum_trigger > 0.5:
+        # ── Momentum gate: don't buy NO against an uptrend ─────────────────
+        # NO is a bearish bet; a grind-up day used to slip under the old 0.5
+        # threshold (≈ +1% over 6h) and the bot shorted every strike on the
+        # way up. Default 0.2 ≈ +0.4% over 6h: bearish entries require the
+        # tape to be flat or falling, not merely "not surging".
+        if momentum_trigger > momentum_block:
             return _hold(
                 f"momentum={momentum_trigger:.2f}: strong uptrend, skipping NO "
                 f"(would bet against momentum)"

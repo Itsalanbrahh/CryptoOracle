@@ -399,6 +399,14 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # professionals price this ladder from); falls back to GBM when the chain
     # is unavailable. Set KALSHI_DERIBIT_ANCHOR=0 to force GBM-only.
     use_deribit = os.getenv("KALSHI_DERIBIT_ANCHOR", "1").strip() == "1"
+    # Momentum gate: block bearish NO entries when 6h momentum trigger exceeds
+    # this (0.2 ≈ +0.4% over 6h), and bullish YES below the negative of it.
+    momentum_block = _env_float("KALSHI_MOMENTUM_GATE", 0.2)
+    # Concentration limits: best-signal-only per scan, bounded total exposure.
+    # One scan once fired 4 same-direction entries at once — top-1 per scan
+    # plus a total open cap bounds correlated wipeout risk on one BTC move.
+    max_entries_per_scan = _env_int("KALSHI_MAX_ENTRIES_PER_SCAN", 1)
+    max_open_positions = _env_int("KALSHI_MAX_OPEN_POSITIONS", 4)
 
     # ── Daily entry state (uses position manager for persistence) ─────────────
     entries_today = pm.get_entry_count_today()
@@ -440,7 +448,19 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             max_entries_per_day = max(5, min(48, int(balance_usd / 5)))
             print(f"[Kalshi/SCAN] daily_risk_cap=${max_daily_risk:.2f} entries_per_day={max_entries_per_day}")
         except Exception as exc:
-            kalshi_balance_cents = None  # non-fatal; proceed but log it
+            # Refuse to trade blind. If the balance fetch fails, the
+            # balance-scaled position/daily-risk sizing above never runs and
+            # the bot would fall through to the raw env defaults (historically
+            # $20/position) — catastrophic oversizing on a small account.
+            return {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "platform": "kalshi",
+                "mode": "live",
+                "gate_blocked": f"balance check failed ({str(exc)[:120]}) — refusing to trade with unscaled defaults",
+                "trades_executed": 0,
+                "total_deployed_usd": 0.0,
+                "results": [],
+            }
 
     spot, annual_vol, funding_rate, spot_history, spot_history_14d = await asyncio.gather(
         fetch_spot_price(),
@@ -617,6 +637,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             maker_mode=maker_mode,
             agg_tilt=agg_tilt,
             implied_prob=implied_prob,
+            momentum_block=momentum_block,
         )
 
         exec_status = "hold"
@@ -669,8 +690,16 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                         "exec_status": exec_status, "exec_error": exec_error, "order_id": None,
                     })
                     continue
+            # ── Gate 5a: one entry per scan — take only the best signal ───────
+            if trades_executed >= max_entries_per_scan:
+                exec_status = "hold"
+                exec_error = f"scan_cap: {trades_executed} entry/entries already placed this scan (max={max_entries_per_scan})"
+            # ── Gate 5b: total open positions cap ─────────────────────────────
+            elif pm.get_open_count() >= max_open_positions:
+                exec_status = "hold"
+                exec_error = f"open_cap: {pm.get_open_count()} positions open (max={max_open_positions})"
             # ── Gate 6: daily risk cap (entries only) ─────────────────────────
-            if deployed_today + decision.position_usd > max_daily_risk:
+            elif deployed_today + decision.position_usd > max_daily_risk:
                 exec_status = "hold"
                 exec_error = (
                     f"daily_risk_cap: ${deployed_today:.2f} deployed today "
