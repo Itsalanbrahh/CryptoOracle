@@ -411,6 +411,21 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # plus a total open cap bounds correlated wipeout risk on one BTC move.
     max_entries_per_scan = _env_int("KALSHI_MAX_ENTRIES_PER_SCAN", 1)
     max_open_positions = _env_int("KALSHI_MAX_OPEN_POSITIONS", 4)
+    # Overnight (02:00–12:00 UTC) books are thin: quotes go one-sided, maker
+    # orders don't fill, and what fills, fills adversely. Entries are blocked
+    # by default (KALSHI_OVERNIGHT_ENTRY=1 to allow); position management and
+    # logging continue, and blocked entries resolve as counterfactuals so the
+    # calibration report shows whether this filter earns its keep.
+    overnight_entry_allowed = os.getenv("KALSHI_OVERNIGHT_ENTRY", "0").strip() == "1"
+    # Don't enter inside the terminal gamma zone: pricing is most efficient
+    # near expiry, the IV interpolation is weakest, and small moves are fatal
+    # relative to premium.
+    min_tte_hours = _env_float("KALSHI_MIN_TTE_HOURS", 1.5)
+    # Consistency arb: yes_ask + no_ask below this sum = guaranteed settlement
+    # profit buying both sides. Detection always logs; execution (two taker
+    # legs, 1 contract) only when KALSHI_ARB_EXECUTE=1.
+    arb_max_sum = _env_float("KALSHI_ARB_MAX_SUM", 0.95)
+    arb_execute = os.getenv("KALSHI_ARB_EXECUTE", "0").strip() == "1"
 
     # ── Daily entry state (uses position manager for persistence) ─────────────
     entries_today = pm.get_entry_count_today()
@@ -500,7 +515,8 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # (roughly 10pm–8am US Eastern). Kalshi is US-regulated; spreads widen
     # and signal quality drops overnight. Dampen confidence by 15% during this window.
     _hour_utc = datetime.now(timezone.utc).hour
-    _liquidity_conf_mult = 0.85 if 2 <= _hour_utc < 12 else 1.0
+    _overnight_window = 2 <= _hour_utc < 12
+    _liquidity_conf_mult = 0.85 if _overnight_window else 1.0
 
     directional, range_bins = await asyncio.gather(
         fetch_btc_markets(min_volume=100.0),
@@ -606,6 +622,33 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
 
     for market in selected:
 
+        # ── Consistency arb: both sides sum under $1 → guaranteed payout ────
+        # Buying YES at yes_ask AND NO at no_ask costs their sum and pays $1
+        # at settlement regardless of outcome. Fires in thin/stale books.
+        # Threshold 0.95 leaves ≥ ~1¢/contract after two taker fees (~4¢).
+        _book_sum = market.yes_ask + market.no_ask
+        if 0.02 < market.yes_ask < 0.99 and 0.02 < market.no_ask < 0.99 and _book_sum <= arb_max_sum:
+            _arb_gross = 1.0 - _book_sum
+            print(
+                f"[Kalshi/ARB] {market.ticker}: yes_ask={market.yes_ask:.2f} + "
+                f"no_ask={market.no_ask:.2f} = {_book_sum:.2f} → guaranteed "
+                f"${_arb_gross:.2f}/contract gross (execute={'on' if arb_execute else 'off'})"
+            )
+            if live and arb_execute:
+                try:
+                    _arb_client = KalshiClient(key_id=os.getenv("KALSHI_API_KEY_ID", ""))
+                    await _arb_client.place_order(
+                        ticker=market.ticker, side="yes", count=1,
+                        price_cents=int(round(market.yes_ask * 100)),
+                    )
+                    await _arb_client.place_order(
+                        ticker=market.ticker, side="no", count=1,
+                        price_cents=int(round((1.0 - market.no_ask) * 100)),
+                    )
+                    print(f"[Kalshi/ARB] {market.ticker}: both legs submitted")
+                except Exception as _arb_exc:
+                    print(f"[Kalshi/ARB] {market.ticker}: leg failed: {_arb_exc}")
+
         aggregate, confidence, agent_signals, divergence_cut = await _run_agents(market, spot, annual_vol=annual_vol, funding_rate=funding_rate)
         # Apply funding rate tilt after agent signals — it's a market-level
         # crowding signal, not tied to any individual market's microstructure.
@@ -665,6 +708,18 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             exec_error = (
                 f"tech_gate: TechnicalMarket={_tech_score:+.3f} (not bearish); "
                 f"NO requires bearish technical confirmation (+8.8pp WR when negative)"
+            )
+        elif decision.action != "HOLD" and _overnight_window and not overnight_entry_allowed:
+            exec_status = "filtered"
+            exec_error = (
+                f"overnight_filter: {_hour_utc:02d}:xx UTC in thin-book window (02-12 UTC); "
+                f"entries blocked, KALSHI_OVERNIGHT_ENTRY=1 to allow"
+            )
+        elif decision.action != "HOLD" and market.hours_to_expiry < min_tte_hours:
+            exec_status = "filtered"
+            exec_error = (
+                f"tte_gate: {market.hours_to_expiry:.1f}h to expiry < {min_tte_hours:.1f}h min; "
+                f"terminal gamma zone — efficient pricing, fatal variance per premium"
             )
 
         if exec_status == "filtered":
