@@ -205,7 +205,11 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
     #   FibonacciRetracement  7%→20%: strongest avg bearish signal (-0.25 avg score)
     #   MacroMarket           8%→12%: second strongest bearish signal (-0.24 avg)
     #   TechnicalMarket      10%→12%: best filter signal (8.8pp WR gap by sign)
-    #   KronosMarket         10%→-5%: inverted — bullish on NO winners, bearish on losers
+    #   KronosMarket         restored to +5%: the June-sim "inversion" was an
+    #     artifact of the agreement-based tracker metric; live resolutions show
+    #     Kronos called price direction correctly ~65% (15/23) while the
+    #     ensemble shorted an uptrend. Inverting it had amplified the bearish
+    #     consensus exactly when Kronos was the dissenting voice that was right.
     #   KnowledgeMarket       7%→3%: always bullish (+0.16 avg), fights NO strategy
     #   LinearRegressionMkt   5%→3%: mild bullish bias, counterproductive
     #   VolatilitySnapback   19%→5%: fires only 4.4% of the time, ~0 avg signal
@@ -215,8 +219,8 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
         + technical * tech_w * 0.12
         + knowledge * know_w * 0.03
         + linreg * linreg_w * 0.03
-        # New agents (46%) — Kronos inverted: bullish Kronos = bearish signal for NO
-        - kronos * kronos_w * 0.05
+        # New agents (46%)
+        + kronos * kronos_w * 0.05
         + candlestick * candlestick_w * 0.06
         + sr * sr_w * 0.05
         + dynamic_sr * dynamic_sr_w * 0.05

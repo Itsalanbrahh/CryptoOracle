@@ -93,7 +93,6 @@ async def main() -> None:
     skipped_range = 0
     skipped_no_data = 0
     wins = 0
-    tracker_entries: list[dict] = []
     out_lines: list[str] = []
 
     for raw in raw_lines:
@@ -161,43 +160,21 @@ async def main() -> None:
                             if won:
                                 wins += 1
                             changed = True
-                            if entry.get("agent_signals"):
-                                tracker_entries.append(entry)
 
         out_lines.append(json.dumps(entry, default=str) if changed else raw)
 
     if resolved_trades or resolved_outcomes:
         _LOG_PATH.write_text("\n".join(out_lines).strip() + "\n")
 
-    # ── Feed direction-accuracy data into the agent tracker ─────────────────
-    # Signal direction vs outcome doesn't depend on whether the trade filled,
-    # so paper/filtered resolutions are valid tracker data. The persistent
-    # recorded-ticker set prevents double-counting against API resolutions.
-    tracked = 0
-    if tracker_entries:
-        stats = at.load_stats()
-        recorded: set[str] = set(stats.get("_recorded_ticker_set", []))
-        for e in tracker_entries:
-            ticker = e.get("ticker", "")
-            if not ticker or ticker in recorded:
-                continue
-            pos_like = {
-                "ticker": ticker,
-                "side": e.get("side", ""),
-                "realized_pnl": e.get("resolved_pnl_usd"),
-                "strike": e.get("strike", 0),
-                "spot_at_entry": e.get("spot_price", 0),
-            }
-            at.record_resolution(pos_like, e["agent_signals"])
-            recorded.add(ticker)
-            tracked += 1
-        stats = at.load_stats()
-        stats["_recorded_ticker_set"] = sorted(recorded)
-        at.save_stats(stats)
+    # ── Rebuild agent tracker stats from the full (now-updated) log ─────────
+    # A full rebuild every run keeps stats consistent with the current
+    # direction metric over ALL history (and cleans out anything accumulated
+    # under an older, buggier metric). Cheap: one pass over the JSONL.
+    tracked = at.rebuild_from_postmortem()
 
     print(
         f"[PAPER-RESOLVE] trades resolved={resolved_trades} ({wins} wins) | "
-        f"yes-outcomes recorded={resolved_outcomes} | tracker+={tracked} | "
+        f"yes-outcomes recorded={resolved_outcomes} | tracker rebuilt from {tracked} | "
         f"skipped: range={skipped_range} no-candle={skipped_no_data}"
     )
 
