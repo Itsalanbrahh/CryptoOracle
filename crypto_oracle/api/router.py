@@ -8,9 +8,10 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
 from pydantic import BaseModel
 
+from crypto_oracle.api.security import require_api_key
 from crypto_oracle.api.websocket import manager
 from crypto_oracle.models.db import (
     add_stock_symbol,
@@ -95,7 +96,7 @@ async def get_history(
 # ---------------------------------------------------------------------------
 
 @router.post("/api/run/{symbol}")
-async def trigger_run(symbol: str, background_tasks: BackgroundTasks) -> dict:
+async def trigger_run(symbol: str, background_tasks: BackgroundTasks, _: None = Depends(require_api_key)) -> dict:
     sym = symbol.upper()
     now = time.time()
     remaining = _RUN_COOLDOWN_SECONDS - (now - _last_run.get(sym, 0))
@@ -179,7 +180,7 @@ class OrderRequest(BaseModel):
 
 
 @router.post("/api/order")
-async def create_order(req: OrderRequest) -> dict:
+async def create_order(req: OrderRequest, _: None = Depends(require_api_key)) -> dict:
     if _alpaca_disabled():
         raise HTTPException(status_code=503, detail="Alpaca integration disabled")
 
@@ -202,7 +203,7 @@ async def create_order(req: OrderRequest) -> dict:
 
 
 @router.post("/api/order/confirm/{order_id}")
-async def confirm_order(order_id: str) -> dict:
+async def confirm_order(order_id: str, _: None = Depends(require_api_key)) -> dict:
     if order_id not in _pending_orders:
         raise HTTPException(status_code=404, detail="Order not found or already processed")
 
@@ -257,7 +258,7 @@ async def confirm_order(order_id: str) -> dict:
 
 
 @router.delete("/api/order/{order_id}")
-async def cancel_order(order_id: str) -> dict:
+async def cancel_order(order_id: str, _: None = Depends(require_api_key)) -> dict:
     if _alpaca_disabled():
         raise HTTPException(status_code=503, detail="Alpaca integration disabled")
     try:
@@ -301,7 +302,7 @@ async def get_auto_trade() -> dict:
 
 
 @router.post("/api/settings/auto-trade")
-async def set_auto_trade(settings: AutoTradeSettings) -> dict:
+async def set_auto_trade(settings: AutoTradeSettings, _: None = Depends(require_api_key)) -> dict:
     from crypto_oracle.autotrader import update_auto_trade_settings
     await update_auto_trade_settings(
         settings.enabled, settings.amount_usd, settings.confidence_threshold
@@ -346,13 +347,13 @@ async def get_stock_watchlist_endpoint() -> list[str]:
 
 
 @router.post("/api/stocks/watchlist/{symbol}")
-async def add_stock_endpoint(symbol: str) -> dict:
+async def add_stock_endpoint(symbol: str, _: None = Depends(require_api_key)) -> dict:
     await add_stock_symbol(symbol.upper())
     return {"symbol": symbol.upper(), "status": "added"}
 
 
 @router.delete("/api/stocks/watchlist/{symbol}")
-async def remove_stock_endpoint(symbol: str) -> dict:
+async def remove_stock_endpoint(symbol: str, _: None = Depends(require_api_key)) -> dict:
     await remove_stock_symbol(symbol.upper())
     return {"symbol": symbol.upper(), "status": "removed"}
 
@@ -381,7 +382,7 @@ async def get_market_open() -> dict:
 
 
 @router.post("/api/stocks/run/{symbol}")
-async def trigger_stock_run(symbol: str, background_tasks: BackgroundTasks) -> dict:
+async def trigger_stock_run(symbol: str, background_tasks: BackgroundTasks, _: None = Depends(require_api_key)) -> dict:
     sym = symbol.upper()
     now = time.time()
     remaining = _RUN_COOLDOWN_SECONDS - (now - _last_run.get(f"stock_{sym}", 0))
@@ -419,7 +420,7 @@ class StockOrderRequest(BaseModel):
 
 
 @router.post("/api/stocks/order")
-async def create_stock_order(req: StockOrderRequest) -> dict:
+async def create_stock_order(req: StockOrderRequest, _: None = Depends(require_api_key)) -> dict:
     if _alpaca_disabled():
         raise HTTPException(status_code=503, detail="Alpaca integration disabled")
 
@@ -462,7 +463,7 @@ async def create_stock_order(req: StockOrderRequest) -> dict:
 
 
 @router.post("/api/stocks/close/{symbol}")
-async def close_stock_order(symbol: str) -> dict:
+async def close_stock_order(symbol: str, _: None = Depends(require_api_key)) -> dict:
     if _alpaca_disabled():
         raise HTTPException(status_code=503, detail="Alpaca integration disabled")
     try:
