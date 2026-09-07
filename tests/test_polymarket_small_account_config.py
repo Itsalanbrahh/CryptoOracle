@@ -9,13 +9,29 @@ from crypto_oracle.polymarket.risk import load_risk_policy
 
 class PolymarketSmallAccountConfigTests(unittest.TestCase):
     def test_load_risk_policy_small_account_defaults(self):
-        with patch.dict(os.environ, {'POLYMARKET_ACCOUNT_SIZE_USD': '70'}, clear=False):
-            policy = load_risk_policy()
-        self.assertEqual(policy.max_open_markets, 1)
-        self.assertAlmostEqual(policy.max_position_usd, 8.4, places=2)
-        self.assertAlmostEqual(policy.max_daily_risk_usd, 12.0, places=2)
-        self.assertAlmostEqual(policy.min_confidence, 0.68, places=2)
-        self.assertAlmostEqual(policy.min_edge, 0.08, places=2)
+        # Patch only the account-size env var and clear any vars that override derived defaults.
+        env_clear = {
+            'POLYMARKET_ACCOUNT_SIZE_USD': '70',
+            'POLYMARKET_MAX_OPEN_MARKETS': '',
+            'POLYMARKET_MAX_POSITION_USD': '',
+            'POLYMARKET_MAX_DAILY_RISK_USD': '',
+            'POLYMARKET_MIN_CONFIDENCE': '',
+            'POLYMARKET_MIN_EDGE': '',
+        }
+        # Remove the keys we want to clear before entering patch.dict (which would restore them)
+        saved = {k: os.environ.pop(k, None) for k in env_clear if k != 'POLYMARKET_ACCOUNT_SIZE_USD'}
+        try:
+            with patch.dict(os.environ, {'POLYMARKET_ACCOUNT_SIZE_USD': '70'}, clear=False):
+                policy = load_risk_policy()
+                self.assertEqual(policy.max_open_markets, 1)
+                self.assertAlmostEqual(policy.max_position_usd, 8.4, places=2)
+                self.assertAlmostEqual(policy.max_daily_risk_usd, 12.0, places=2)
+                self.assertAlmostEqual(policy.min_confidence, 0.68, places=2)
+                self.assertAlmostEqual(policy.min_edge, 0.08, places=2)
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
 
     def test_filter_markets_by_expiry_window(self):
         near = parse_gamma_market({
