@@ -173,9 +173,16 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
             strike = float(parts[-1][1:])  # strip T/B prefix
         except (ValueError, IndexError):
             strike = 0.0
-        traded = float(mp.get("total_traded_dollars", 0))
-        realized = float(mp.get("realized_pnl_dollars", 0))
-        exposure = float(mp.get("market_exposure_dollars", 0))
+        # Kalshi v2 returns amounts in CENTS (integer) via total_traded / market_exposure.
+        # Older snapshot code read the non-existent *_dollars suffix fields and got 0,
+        # which zeroed entry_price and disabled the daily spending cap silently.
+        traded_cents = float(mp.get("total_traded") or mp.get("total_traded_dollars") or 0)
+        realized_cents = float(mp.get("realized_pnl") or mp.get("realized_pnl_dollars") or 0)
+        exposure_cents = float(mp.get("market_exposure") or mp.get("market_exposure_dollars") or 0)
+        # Convert cents → dollars
+        traded = traded_cents / 100
+        realized = realized_cents / 100
+        exposure = exposure_cents / 100
         if realized > 0:
             # Partially filled — total_traded includes sale proceeds,
             # so remaining_cost doesn't equal entry_price × count.
