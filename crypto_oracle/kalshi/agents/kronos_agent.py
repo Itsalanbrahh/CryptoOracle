@@ -113,6 +113,10 @@ async def _fetch_btc_data(days: int = 60) -> pd.DataFrame:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["ts"])
     df = df.set_index("timestamp")
+    # volume may be absent from some price feeds — fill with 0 so Kronos
+    # can still run (it uses close/open/high/low for forecasting anyway)
+    if "volume" not in df.columns:
+        df["volume"] = 0.0
     feed = df[["open", "high", "low", "close", "volume"]].copy()
     feed.columns = ["open", "high", "low", "close", "volume"]
     return feed
