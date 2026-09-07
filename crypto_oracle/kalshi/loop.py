@@ -471,6 +471,26 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                     "total_deployed_usd": 0.0,
                     "results": [],
                 }
+
+            # ── Gate: live-entry readiness — require ≥100 unique official resolutions ──
+            from .settlement import live_entry_gate
+            _settlements = []
+            try:
+                _settlements = await client.get_settlements(limit=200)
+            except Exception:
+                pass  # gate handled below
+            _gate_ok, _gate_reason = live_entry_gate(_settlements)
+            if not _gate_ok:
+                return {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "platform": "kalshi",
+                    "mode": "live",
+                    "gate_blocked": _gate_reason,
+                    "trades_executed": 0,
+                    "total_deployed_usd": 0.0,
+                    "results": [],
+                }
+
             # ── Scale position size with balance (5% pct, no hard cap) ─────────
             # Position = balance × position_pct — grows with the account.
             # E.g. $100 → $5, $240 → $12, $1,000 → $50. No cap.
