@@ -14,6 +14,7 @@ from crypto_oracle.polymarket.agents import (
     TechnicalMarketAgent,
     fetch_spot_price,
     fetch_spot_history,
+    fetch_hourly_btc,
 )
 from .client import KalshiClient
 from .deribit import implied_prob_above
@@ -533,11 +534,11 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                 "results": [],
             }
 
-    spot, annual_vol, funding_rate, spot_history, spot_history_14d, order_book, basis = await asyncio.gather(
+    spot, annual_vol, funding_rate, hourly_6h, spot_history_14d, order_book, basis = await asyncio.gather(
         fetch_spot_price(),
         fetch_realized_vol(hours=24),
         fetch_funding_rate_multi(),
-        fetch_spot_history(days=1),   # 24h of hourly data — enough for 6h momentum
+        fetch_hourly_btc(hours=6),  # 6 completed hourly candles for momentum gate
         fetch_spot_history(days=14),  # 14-day window for regime detection
         fetch_order_book_depth(),
         fetch_basis_signal(),
@@ -569,10 +570,10 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # Funding rate adds a small directional tilt on top of agent aggregate
     fund_tilt = funding_tilt(funding_rate)
 
-    # ── Momentum trigger: compare current spot to 6h ago ───────────────────
+    # ── Momentum trigger: compare current spot to 6h ago (completed hourly candles) ──
     momentum_trigger = 0.0
-    if spot_history and len(spot_history) > 1:
-        spot_6h_ago = spot_history[0]  # oldest in the window
+    if hourly_6h and len(hourly_6h) >= 2:
+        spot_6h_ago = hourly_6h[0]['close']  # oldest completed hourly candle
         if spot_6h_ago > 0:
             pct_change = (spot - spot_6h_ago) / spot_6h_ago
             # Map percentage change to [-1, 1] trigger: ±1% → ±0.5, ±3% → ±1.0

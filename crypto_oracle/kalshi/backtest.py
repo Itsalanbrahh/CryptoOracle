@@ -75,31 +75,22 @@ async def fetch_historical_btc(days: int = _DEFAULT_DAYS) -> list[dict]:
     url = "https://api.kraken.com/0/public/OHLC"
     params = {"pair": "XBTUSD", "interval": 60}
 
-    # Kraken returns the last 720 candles per call (30 days)
-    # We need multiple calls for > 30 days
+    # Kraken hard-caps responses at 720 candles per call (~30 days of hourly data).
+    # Repeated calls without a valid `since` parameter return the same 720 candles.
+    # We make a single call and report the actual coverage honestly.
     all_rows: list[list] = []
-    seen = set()
 
     async with aiohttp.ClientSession() as session:
-        for offset in range(0, days, 28):
-            # Kraken doesn't support offset param natively; we use `since`
-            # Fetch a larger window and dedupe
-            try:
-                async with session.get(
-                    url, params=params, timeout=aiohttp.ClientTimeout(total=20)
-                ) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-                rows = data.get("result", {}).get("XXBTZUSD", [])
-                for row in rows:
-                    ts = int(row[0])
-                    if ts not in seen:
-                        seen.add(ts)
-                        all_rows.append(row)
-            except Exception:
-                continue
-            # Small delay to avoid rate limits
-            await asyncio.sleep(0.5)
+        try:
+            async with session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            rows = data.get("result", {}).get("XXBTZUSD", [])
+            all_rows = list(rows)
+        except Exception:
+            pass
 
     # Sort by timestamp and convert to dicts
     all_rows.sort(key=lambda r: int(r[0]))
@@ -302,12 +293,17 @@ async def run_backtest(
                 # Determine outcome: use the candle at actual expiry, not just i+1.
                 # hours_to can range 2–72h; settling on i+1 (1h later) regardless
                 # inflates win rates for far-OTM NO trades and distorts PnL.
-                settle_offset = max(1, min(int(round(hours_to)), len(candles) - 1 - i))
+                # Exclude decisions when there are no future candles to settle against
+                # (last candle), or when the required settle index is beyond the dataset.
+                candles_remaining = len(candles) - 1 - i
+                if candles_remaining < 1:
+                    continue  # terminal candle — no settlement data, skip
+                settle_offset = min(int(round(hours_to)), candles_remaining)
+                settle_offset = max(1, settle_offset)
                 settle_idx = i + settle_offset
-                if settle_idx < len(candles):
-                    settle_price = candles[settle_idx]["close"]
-                else:
-                    settle_price = spot
+                if settle_idx >= len(candles):
+                    continue  # settlement beyond dataset — exclude to avoid bias
+                settle_price = candles[settle_idx]["close"]
 
                 if action == "BUY_YES":
                     won = settle_price >= strike
