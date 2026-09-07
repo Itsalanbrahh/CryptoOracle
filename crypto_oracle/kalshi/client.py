@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -13,6 +14,17 @@ from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 
 KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_BASE_PATH = "/trade-api/v2"  # included in HMAC signature
+
+
+def _client_order_id(ticker: str, action: str, side: str, count: int, price_cents: int) -> str:
+    """Stable request identity so a restart cannot duplicate an order.
+
+    The same ticker/action/side/count/price_cents always hashes to the same
+    client_order_id — the exchange deduplicates on it so a process restart or
+    cron re-fire cannot place the same entry twice.
+    """
+    intent = f"kalshi-v2|{ticker}|{action}|{side}|{count}|{price_cents}"
+    return hashlib.sha256(intent.encode()).hexdigest()[:32]
 
 
 def _load_private_key():
@@ -90,7 +102,17 @@ class KalshiClient:
         """Cancel a single resting order by id (DELETE /portfolio/orders/{id})."""
         return await self._delete(f"/portfolio/orders/{order_id}")
 
-    async def place_order(self, ticker: str, side: str, count: int, price_cents: int, order_type: str = "limit") -> dict:
+    async def place_order(
+        self,
+        ticker: str,
+        side: str,
+        count: int,
+        price_cents: int,
+        order_type: str = "limit",
+        *,
+        expiration_time: int | None = None,
+        client_order_id: str | None = None,
+    ) -> dict:
         """
         ticker: e.g. KXBTCD-26JUN2203-T64199.99
         side: 'yes' or 'no'  (converted to 'bid'/'ask' for v2 API)
@@ -101,6 +123,9 @@ class KalshiClient:
           - bid/ask sides (not yes/no)
           - string count and dollar-string price
           - time_in_force and self_trade_prevention_type required
+          - post_only=True for maker entries (reduces fees, never crosses spread)
+          - expiration_time: Unix seconds, GTC + expiry so stale orders self-cancel
+          - client_order_id: deterministic for restart idempotency
         """
         # v2 API: side is 'bid' (buy YES) or 'ask' (buy NO)
         book_side = "bid" if side == "yes" else "ask"
@@ -118,10 +143,65 @@ class KalshiClient:
             "price": dollar_price,
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross",
+            # Maker entry: rest passively inside the spread; never lifts the ask.
+            # Avoids taker fees and prevents inadvertent market impact.
+            "post_only": True,
+            # Entry reservation never reduces an existing position.
+            "reduce_only": False,
+            # Automatically cancel if exchange pauses (safety guard).
+            "cancel_order_on_pause": True,
+            # Deterministic ID: the same ticker+side+count+price always hashes
+            # to the same client_order_id so cron restarts are idempotent.
+            "client_order_id": client_order_id or _client_order_id(
+                ticker, "buy", book_side, count, price_cents
+            ),
         }
+        if expiration_time is not None:
+            body["expiration_time"] = int(expiration_time)
         return await self._post("/portfolio/events/orders", body)
 
-    async def close_position(self, ticker: str, count: int, side: str, price_cents: int) -> dict:
+    async def get_settlements(
+        self,
+        ticker: str | None = None,
+        event_ticker: str | None = None,
+        limit: int = 200,
+        min_ts: str | None = None,
+        max_ts: str | None = None,
+    ) -> list[dict]:
+        """Return account-level Settlement records from /portfolio/settlements.
+
+        Fields per OpenAPI 3.29.0 Settlement schema:
+          ticker, event_ticker, market_result (yes|no|scalar),
+          yes_count_fp, yes_total_cost_dollars, no_count_fp, no_total_cost_dollars,
+          revenue (cents int), settled_time (ISO8601), fee_cost (dollar string), value.
+        """
+        params: dict = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if min_ts:
+            params["min_ts"] = min_ts
+        if max_ts:
+            params["max_ts"] = max_ts
+        data = await self._get("/portfolio/settlements", params=params, auth=True)
+        return data.get("settlements", [])
+
+    async def get_market(self, ticker: str) -> dict:
+        """Fetch a single market by ticker, returning the raw Market schema dict."""
+        data = await self._get(f"/markets/{ticker}")
+        return data.get("market", data)
+
+    async def close_position(
+        self,
+        ticker: str,
+        count: int,
+        side: str,
+        price_cents: int,
+        *,
+        expiration_time: int | None = None,
+        client_order_id: str | None = None,
+    ) -> dict:
         """Close/reduce an existing position by selling contracts back to the market.
 
         ticker: the market ticker
@@ -145,5 +225,15 @@ class KalshiClient:
             "price": dollar_price,
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross",
+            # reduce_only ensures we never accidentally open a new position on
+            # the opposite side — the sell is capped to our current holding.
+            "reduce_only": True,
+            # cancel_order_on_pause: exit orders should also cancel on pause
+            "cancel_order_on_pause": True,
+            "client_order_id": client_order_id or _client_order_id(
+                ticker, "sell", book_side, count, price_cents
+            ),
         }
+        if expiration_time is not None:
+            body["expiration_time"] = int(expiration_time)
         return await self._post("/portfolio/events/orders", body)

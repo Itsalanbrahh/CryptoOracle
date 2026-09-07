@@ -50,6 +50,11 @@ def make_position(
     edge: float,
     confidence: float,
     spot_at_entry: float,
+    # Optional contract metadata (preserves what the market supplied)
+    contract_type: str | None = None,   # "binary" | "range" | "scalar"
+    floor_strike: float | None = None,  # same as strike for directional
+    cap_strike: float | None = None,    # upper bound for range markets
+    close_time: str | None = None,      # ISO8601 trading close time
 ) -> dict:
     """Create a new position dict for persistence."""
     return {
@@ -63,6 +68,11 @@ def make_position(
         "edge": round(edge, 4),
         "confidence": round(confidence, 4),
         "spot_at_entry": round(spot_at_entry, 2),
+        # Contract-type metadata preserved for P&L and settlement logic
+        "contract_type": contract_type or "binary",
+        "floor_strike": floor_strike if floor_strike is not None else strike,
+        "cap_strike": cap_strike,
+        "close_time": close_time,
         "entered_at": _now_iso(),
         "closed": False,
         "closed_at": None,
@@ -186,9 +196,16 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
             strike = float(parts[-1][1:])  # strip T/B prefix
         except (ValueError, IndexError):
             strike = 0.0
-        traded = float(mp.get("total_traded_dollars", 0))
-        realized = float(mp.get("realized_pnl_dollars", 0))
-        exposure = float(mp.get("market_exposure_dollars", 0))
+        # Kalshi v2 returns amounts in CENTS (integer) via total_traded / market_exposure.
+        # Older snapshot code read the non-existent *_dollars suffix fields and got 0,
+        # which zeroed entry_price and disabled the daily spending cap silently.
+        traded_cents = float(mp.get("total_traded") or mp.get("total_traded_dollars") or 0)
+        realized_cents = float(mp.get("realized_pnl") or mp.get("realized_pnl_dollars") or 0)
+        exposure_cents = float(mp.get("market_exposure") or mp.get("market_exposure_dollars") or 0)
+        # Convert cents → dollars
+        traded = traded_cents / 100
+        realized = realized_cents / 100
+        exposure = exposure_cents / 100
         if realized > 0:
             # Partially filled — total_traded includes sale proceeds,
             # so remaining_cost doesn't equal entry_price × count.
@@ -208,14 +225,33 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
 
     local_positions = _load_all()
     api_tickers = set(api_by_ticker.keys())
-    local_open = {p["ticker"] for p in local_positions if not p.get("closed")}
     local_all = {p["ticker"] for p in local_positions}
 
     added = 0
     removed = 0
     updated = 0
     reopened = 0
+    deduped = 0
     new_positions: list[dict] = []
+
+    # ── Deduplication: if multiple open locals exist for the same ticker,
+    # keep only the first (earliest entered_at) and close the rest as
+    # 'duplicate_reconciled'. Each local must NOT each receive the full
+    # exchange net count — that would over-count exposure.
+    _seen_open: dict[str, bool] = {}  # ticker → True once the keeper is chosen
+
+    for p in local_positions:
+        ticker = p["ticker"]
+        if not p.get("closed") and ticker in api_tickers:
+            if ticker in _seen_open:
+                # Second (or later) open local for the same ticker → dedup it.
+                p["closed"] = True
+                p["closed_at"] = _now_iso()
+                p["close_reason"] = "duplicate_reconciled (sync saw a second local for same ticker)"
+                p["realized_pnl"] = None
+                deduped += 1
+            else:
+                _seen_open[ticker] = True
 
     for p in local_positions:
         ticker = p["ticker"]
@@ -237,8 +273,9 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
                 p["close_reason"] = "settled (no longer on API)"
                 p["realized_pnl"] = None
             removed += 1
-        elif p.get("closed") and ticker in api_tickers:
+        elif p.get("closed") and ticker in api_tickers and not (p.get("close_reason") or "").startswith("duplicate"):
             # Position was incorrectly marked closed but is still alive on API → re-open
+            # (but never re-open positions that were just closed by the dedup pass above)
             ap = api_by_ticker[ticker]
             p["closed"] = False
             p["closed_at"] = None
@@ -250,13 +287,18 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
             if p["entry_price"] == 0 and ap["entry_price"] > 0:
                 p["entry_price"] = ap["entry_price"]
             reopened += 1
-        elif not p.get("closed") and ticker in api_tickers:
-            # Update count/entry from API in case of partial fills
+        elif not p.get("closed") and ticker in api_tickers and not (p.get("close_reason") or "").startswith("duplicate"):
+            # Update count/entry from API in case of partial fills —
+            # but only for the non-dedup'd keeper (dedup'd ones have close_reason set above)
             ap = api_by_ticker[ticker]
-            p["count"] = ap["count"]
+            # For pending entries: do NOT overwrite the count with the exchange
+            # net — the entry hasn't been confirmed filled yet. We only update
+            # count once order_pending is cleared (i.e., the fill appeared on the API).
+            if not p.get("order_pending"):
+                p["count"] = ap["count"]
+                if p["entry_price"] == 0 and ap["entry_price"] > 0:
+                    p["entry_price"] = ap["entry_price"]
             p["order_pending"] = False  # confirmed filled
-            if p["entry_price"] == 0 and ap["entry_price"] > 0:
-                p["entry_price"] = ap["entry_price"]
             updated += 1
         new_positions.append(p)
 
@@ -304,7 +346,7 @@ async def sync_from_kalshi(client: KalshiClient | None = None) -> int:
         f"[Kalshi/SYNC] API returned {len(api_markets)} markets, "
         f"{len(api_by_ticker)} with open positions. "
         f"Added={added} Reopened={reopened} Removed(settled)={removed} Updated={updated} "
-        f"Open={open_count}"
+        f"Deduped={deduped} Open={open_count}"
     )
     return open_count
 
