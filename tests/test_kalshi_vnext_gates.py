@@ -95,37 +95,30 @@ def test_heartbeat_does_not_submit_close_orders_in_paper_mode():
     import ast
     from pathlib import Path
 
-    src = Path("/Users/alanruelas/.hermes/scripts/kalshi_position_heartbeat.py").read_text()
+    src = Path("crypto_oracle/kalshi/kalshi_position_heartbeat.py").read_text()
     tree = ast.parse(src)
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
 
-    class CloseSiteVisitor(ast.NodeVisitor):
-        def __init__(self):
-            self.guarded = True  # assume guarded until we find a bad call
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "close_position"
+    ]
+    assert calls, "heartbeat must contain its close-order submission path"
 
-        def visit_If(self, node):
-            # Is this `if live:` or `if not live:`?
-            live_guard = (
-                isinstance(node.test, ast.Name) and node.test.id == "live"
-            ) or (
-                isinstance(node.test, ast.UnaryOp)
-                and isinstance(node.test.op, ast.Not)
-                and isinstance(node.test.operand, ast.Name)
-                and node.test.operand.id == "live"
-            )
-            if not live_guard:
-                # Check if close_position is called inside an un-guarded block
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Call):
-                        func = child.func
-                        if isinstance(func, ast.Attribute) and func.attr == "close_position":
-                            self.guarded = False
-            self.generic_visit(node)
-
-    visitor = CloseSiteVisitor()
-    visitor.visit(tree)
-    assert visitor.guarded, (
-        "close_position() must be inside an 'if live:' guard in the heartbeat"
-    )
+    for call in calls:
+        node = call
+        guarded_by_live = False
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "live":
+                guarded_by_live = True
+                break
+        assert guarded_by_live, "close_position() must be inside an 'if live:' guard in the heartbeat"
 
 
 def test_sync_from_kalshi_uses_cents_field_for_entry_price():
