@@ -53,7 +53,8 @@ class PolymarketOrchestratorTests(unittest.TestCase):
              patch.object(orch.agents[4], 'run', new=AsyncMock(return_value=self._signal('LinearRegressionMarket', 0.8, 0.8))):
             result = asyncio.run(orch.run_market(market))
         self.assertEqual(result.decision.action, 'HOLD')
-        self.assertIn('does not offer enough edge', result.decision.reasoning)
+        self.assertIn('edge', result.decision.reasoning)
+        self.assertIn('0.050 < 0.200', result.decision.reasoning)
 
     def test_orchestrator_allows_high_conviction_trade(self):
         market = parse_gamma_market({
