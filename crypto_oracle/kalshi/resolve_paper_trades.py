@@ -31,6 +31,35 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
+def _candle_ts(candle: dict) -> int:
+    """Return a Unix timestamp (int) from a candle dict.
+
+    fetch_historical_btc uses two code paths:
+      - Kraken path: emits {'timestamp': int, 'ts': str, ...}   — both keys present
+      - LSE path:    emits {'ts': str, ...}                      — NO 'timestamp' key
+
+    Always prefer 'timestamp' (already an int); fall back to parsing 'ts'.
+    Returns 0 on parse failure so bisect still works (candle is excluded).
+    """
+    raw = candle.get("timestamp")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    ts_str = candle.get("ts", "")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
+        except (ValueError, TypeError):
+            pass
+    return 0
+
+
 _env = Path("/Users/alanruelas/crypto_oracle/.env")
 if _env.exists():
     for _line in _env.read_text().splitlines():
@@ -72,7 +101,7 @@ async def main() -> None:
 
     # ── Fetch settlement candles (last ~30 days of hourly closes) ───────────
     candles = await fetch_historical_btc(days=30)
-    ts_list = [c["timestamp"] for c in candles]
+    ts_list = [_candle_ts(c) for c in candles]
     close_list = [c["close"] for c in candles]
 
     def settle_price_at(expiry: datetime) -> float | None:

@@ -121,6 +121,38 @@ class KalshiClient:
         }
         return await self._post("/portfolio/events/orders", body)
 
+    async def get_settlements(
+        self,
+        ticker: str | None = None,
+        event_ticker: str | None = None,
+        limit: int = 200,
+        min_ts: str | None = None,
+        max_ts: str | None = None,
+    ) -> list[dict]:
+        """Return account-level Settlement records from /portfolio/settlements.
+
+        Fields per OpenAPI 3.29.0 Settlement schema:
+          ticker, event_ticker, market_result (yes|no|scalar),
+          yes_count_fp, yes_total_cost_dollars, no_count_fp, no_total_cost_dollars,
+          revenue (cents int), settled_time (ISO8601), fee_cost (dollar string), value.
+        """
+        params: dict = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if min_ts:
+            params["min_ts"] = min_ts
+        if max_ts:
+            params["max_ts"] = max_ts
+        data = await self._get("/portfolio/settlements", params=params, auth=True)
+        return data.get("settlements", [])
+
+    async def get_market(self, ticker: str) -> dict:
+        """Fetch a single market by ticker, returning the raw Market schema dict."""
+        data = await self._get(f"/markets/{ticker}")
+        return data.get("market", data)
+
     async def close_position(self, ticker: str, count: int, side: str, price_cents: int) -> dict:
         """Close/reduce an existing position by selling contracts back to the market.
 

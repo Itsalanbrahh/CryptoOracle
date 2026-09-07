@@ -50,6 +50,11 @@ def make_position(
     edge: float,
     confidence: float,
     spot_at_entry: float,
+    # Optional contract metadata (preserves what the market supplied)
+    contract_type: str | None = None,   # "binary" | "range" | "scalar"
+    floor_strike: float | None = None,  # same as strike for directional
+    cap_strike: float | None = None,    # upper bound for range markets
+    close_time: str | None = None,      # ISO8601 trading close time
 ) -> dict:
     """Create a new position dict for persistence."""
     return {
@@ -63,6 +68,11 @@ def make_position(
         "edge": round(edge, 4),
         "confidence": round(confidence, 4),
         "spot_at_entry": round(spot_at_entry, 2),
+        # Contract-type metadata preserved for P&L and settlement logic
+        "contract_type": contract_type or "binary",
+        "floor_strike": floor_strike if floor_strike is not None else strike,
+        "cap_strike": cap_strike,
+        "close_time": close_time,
         "entered_at": _now_iso(),
         "closed": False,
         "closed_at": None,
