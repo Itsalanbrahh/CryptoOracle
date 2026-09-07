@@ -72,6 +72,29 @@ def _fee_per_contract(price: float, maker: bool) -> float:
     return _fee_total(price, 1, maker)
 
 
+def _size_order(
+    price: float,
+    target_usd: float,
+    max_position_usd: float,
+    maker: bool,
+) -> tuple[int, float, float]:
+    """Return a contract count whose premium plus fee stays within the cap."""
+    if price <= 0.0 or max_position_usd <= 0.0:
+        return 0, 0.0, 0.0
+
+    max_by_premium = int(max_position_usd / price)
+    if max_by_premium < 1:
+        return 0, 0.0, 0.0
+    count = min(max_by_premium, max(1, int(target_usd / price)))
+    while count > 0:
+        fee = _fee_total(price, count, maker)
+        total_risk = round(count * price + fee, 2)
+        if total_risk <= max_position_usd + 1e-9:
+            return count, total_risk, fee
+        count -= 1
+    return 0, 0.0, 0.0
+
+
 @dataclass
 class KalshiDecision:
     ticker: str
@@ -246,9 +269,13 @@ def decide_kalshi_trade(
         # ── Divergence cut: reduce position when agents strongly disagree ──
         if divergence_cut < 1.0:
             position_usd = position_usd * divergence_cut
-        count = max(1, int(position_usd / exec_price))
-        actual_position = round(count * exec_price, 2)
-        fee_paid = _fee_total(exec_price, count, maker_mode)
+        count, actual_position, fee_paid = _size_order(
+            exec_price, position_usd, max_position_usd, maker_mode
+        )
+        if count == 0:
+            return _hold(
+                f"position cap ${max_position_usd:.2f} cannot fund one YES contract plus fee"
+            )
         profit_if_win = round(count * (1.0 - exec_price) - fee_paid, 2)
         return KalshiDecision(
             ticker=market.ticker, strike=market.strike,
@@ -289,9 +316,13 @@ def decide_kalshi_trade(
         # ── Divergence cut: reduce position when agents strongly disagree ──
         if divergence_cut < 1.0:
             position_usd = position_usd * divergence_cut
-        count = max(1, int(position_usd / exec_price))
-        actual_position = round(count * exec_price, 2)
-        fee_paid = _fee_total(exec_price, count, maker_mode)
+        count, actual_position, fee_paid = _size_order(
+            exec_price, position_usd, max_position_usd, maker_mode
+        )
+        if count == 0:
+            return _hold(
+                f"position cap ${max_position_usd:.2f} cannot fund one NO contract plus fee"
+            )
         profit_if_win = round(count * (1.0 - exec_price) - fee_paid, 2)
         return KalshiDecision(
             ticker=market.ticker, strike=market.strike,
