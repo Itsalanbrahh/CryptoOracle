@@ -638,7 +638,23 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                     side=pos["side"],
                     price_cents=price_cents,
                 )
-                closed = pm.close_position(pos["ticker"], action["reason"], action["close_price"])
+                # Do NOT mark the position closed or log realized P&L here.
+                # A submitted close order is not a fill. The position is only
+                # considered closed once sync_from_kalshi sees it gone from the
+                # API (next heartbeat/scan cycle). Marking closed on submission
+                # would: (a) double-count the close if it doesn't fill, and
+                # (b) log realized P&L for a position that is still live.
+                order_id = resp.get("order_id") or resp.get("order", {}).get("order_id")
+                _v2_fill = float(resp.get("fill_count") or resp.get("fill_count_fp") or 0)
+                _v2_remaining = float(resp.get("remaining_count") or resp.get("remaining_count_fp") or 0)
+                _filled_immediately = _v2_fill > 0 and _v2_remaining == 0
+                if _filled_immediately:
+                    # Taker fill: update local accounting immediately only when
+                    # the response confirms fully filled (remaining_count == 0).
+                    closed = pm.close_position(pos["ticker"], action["reason"], action["close_price"])
+                    realized_pnl = closed["realized_pnl"] if closed else None
+                else:
+                    realized_pnl = None  # pending fill — don't record P&L yet
                 closed_positions.append({
                     "ticker": pos["ticker"],
                     "side": pos["side"],
@@ -646,8 +662,9 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                     "entry_price": pos["entry_price"],
                     "close_price": action["close_price"],
                     "reason": action["reason"],
-                    "pnl": closed["realized_pnl"] if closed else None,
-                    "order_id": resp.get("order", {}).get("order_id") or resp.get("order_id"),
+                    "pnl": realized_pnl,
+                    "order_id": order_id,
+                    "fill_status": "filled" if _filled_immediately else "pending",
                 })
             except Exception as exc:
                 pass  # non-fatal; skip if close fails
@@ -843,12 +860,17 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                             count=decision.count,
                             price_cents=decision.price_cents,
                         )
-                        order_id = resp.get("order", {}).get("order_id") or resp.get("order_id")
+                        order_id = resp.get("order_id") or resp.get("order", {}).get("order_id")
+                        # V2 response: fill_count / remaining_count are top-level fixed-point strings.
+                        # Legacy nested schema used order.status == "executed"; check both.
+                        _v2_fill = float(resp.get("fill_count") or resp.get("fill_count_fp") or 0)
+                        _v2_remaining = float(resp.get("remaining_count") or resp.get("remaining_count_fp") or 0)
+                        _legacy_status = (resp.get("order") or {}).get("status", "")
+                        _is_filled_immediately = _v2_fill > 0 and _v2_remaining == 0
+                        _order_status = "executed" if (_is_filled_immediately or _legacy_status == "executed") else "resting"
                         exec_status = "submitted"
                         trades_executed += 1
                         total_deployed += decision.position_usd
-                        # Save position for tracking & stop-loss/take-profit
-                        _order_status = (resp.get("order") or {}).get("status", "")
                         pos = pm.make_position(
                             ticker=decision.ticker,
                             side=decision.side,

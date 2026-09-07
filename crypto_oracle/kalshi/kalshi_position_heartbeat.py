@@ -236,28 +236,26 @@ async def main() -> None:
                 price_cents = int(round(action["close_price"] * 100))
             else:
                 price_cents = int(round((1.0 - action["close_price"]) * 100))
-            resp = await client.close_position(
-                ticker=pos["ticker"],
-                count=close_count,
-                side=close_side,
-                price_cents=price_cents,
-            )
-            # Don't mark closed locally — let sync_from_kalshi detect fills
-            # on the next cycle. This avoids re-triggering on unfilled orders.
-            entry_price = pos.get("entry_price", 0) or 0
-            close_px = action["close_price"]
-            pnl = round((close_px - entry_price) * close_count, 2)
-            log_close_event(
-                ticker=pos["ticker"],
-                count=close_count,
-                side=close_side,
-                close_price=close_px,
-                reason=action["reason"],
-                entry_price=entry_price,
-                realized_pnl=pnl,
-            )
-            print(f"[Kalshi/HEARTBEAT] ORDER PLACED {pos['ticker']} — {action['reason']} — "
-                  f"close_price=${close_px:.4f} count={close_count} side={close_side} pnl=${pnl}")
+            if live:
+                resp = await client.close_position(
+                    ticker=pos["ticker"],
+                    count=close_count,
+                    side=close_side,
+                    price_cents=price_cents,
+                )
+                # Submission is not a fill. Reconciliation records fills and
+                # only then closes/logs realized P&L.
+                order = resp.get("order") or resp
+                print(
+                    f"[Kalshi/HEARTBEAT] CLOSE SUBMITTED {pos['ticker']} — {action['reason']} — "
+                    f"close_price=${action['close_price']:.4f} count={close_count} "
+                    f"side={close_side} order_id={order.get('order_id', '')}"
+                )
+            else:
+                print(
+                    f"[Kalshi/HEARTBEAT] PAPER CLOSE {pos['ticker']} — {action['reason']} — "
+                    f"close_price=${action['close_price']:.4f} count={close_count} side={close_side}"
+                )
         except Exception as exc:
             print(f"[Kalshi/HEARTBEAT] FAILED to close {pos['ticker']}: {exc}")
 
