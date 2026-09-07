@@ -33,6 +33,7 @@ alpaca-py>=0.26.0
 # HTTP
 aiohttp>=3.9.0
 websockets>=12.0
+lse-data==0.14.0
 
 # Reports
 reportlab>=4.0.0

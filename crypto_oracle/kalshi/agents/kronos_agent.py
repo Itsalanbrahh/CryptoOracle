@@ -106,7 +106,11 @@ async def _fetch_btc_data(days: int = 60) -> pd.DataFrame:
     from crypto_oracle.kalshi.backtest import fetch_historical_btc
 
     candles = await fetch_historical_btc(days=days)
+    if not candles:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     df = pd.DataFrame(candles)
+    if "ts" not in df.columns:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["ts"])
     df = df.set_index("timestamp")
     feed = df[["open", "high", "low", "close", "volume"]].copy()

@@ -36,10 +36,10 @@ _CANDLE_CACHE_TTL = 1800  # 30 minutes
 
 
 async def fetch_historical_btc(days: int = _DEFAULT_DAYS) -> list[dict]:
-    """Fetch hourly BTC candles from Kraken for the last N days.
+    """Fetch hourly BTC candles — LSE first, Kraken fallback.
 
     Results are cached for 30 minutes so multiple agents in a single scan
-    share one Kraken API call instead of each making independent requests.
+    share one API call instead of each making independent requests.
     Returns list of {ts, open, high, low, close} sorted chronologically.
     """
     import time
@@ -52,7 +52,26 @@ async def fetch_historical_btc(days: int = _DEFAULT_DAYS) -> list[dict]:
         if time.time() - fetched_at < _CANDLE_CACHE_TTL:
             return candles
 
-    # Kraken OHLC: interval=60 (1h)
+    # ── LSE path ────────────────────────────────────────────────────────────
+    try:
+        from .lse_provider import get_provider as _get_lse
+        prov = _get_lse()
+        if prov.available:
+            data = prov._client.candles("BTC/USD", "1h", limit=days * 24, order="desc")
+            if data and len(data) >= 10:
+                candles = [{
+                    "ts": c["timestamp"],
+                    "open": c["open"],
+                    "high": c["high"],
+                    "low": c["low"],
+                    "close": c["close"],
+                } for c in reversed(data)]
+                _CANDLE_CACHE[days] = (time.time(), candles)
+                return candles
+    except Exception:
+        pass
+
+    # ── Kraken path (original) ──────────────────────────────────────────────
     url = "https://api.kraken.com/0/public/OHLC"
     params = {"pair": "XBTUSD", "interval": 60}
 

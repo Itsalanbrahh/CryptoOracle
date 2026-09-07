@@ -9,6 +9,27 @@ from typing import Literal
 from .markets import KalshiMarket
 
 
+_CONSENSUS_AGENTS = (
+    "KnowledgeMarket",
+    "KronosMarket",
+    "DynamicSR",
+    "MomentumContinuation",
+)
+
+
+def directional_consensus(
+    agent_signals: dict[str, dict], side: str, *, min_agree: int = 3
+) -> tuple[bool, int]:
+    """Require the strongest recently calibrated agents to agree on direction."""
+    direction = 1 if side == "yes" else -1
+    agreeing = sum(
+        1
+        for name in _CONSENSUS_AGENTS
+        if float((agent_signals.get(name) or {}).get("score") or 0.0) * direction > 0
+    )
+    return agreeing >= min_agree, agreeing
+
+
 def _gbm_prob(spot: float, strike: float, hours_to_expiry: float, annual_vol: float, drift: float = 0.35) -> float:
     """P(BTC > strike at expiry) under lognormal GBM with BTC long-run drift.
 
@@ -85,6 +106,9 @@ def decide_kalshi_trade(
     agg_tilt: float = 0.08,                 # max belief tilt from agent aggregate (dollars of prob)
     implied_prob: float | None = None,      # options-implied P(YES) anchor; preferred over GBM when set
     momentum_block: float = 0.2,            # block counter-trend trades when |6h momentum trigger| exceeds this
+    require_implied_prob: bool = False,     # fail closed when the professional IV anchor is unavailable
+    min_no_price: float = 0.0,              # avoid lottery-like NO contracts with poor observed calibration
+    max_edge: float = 1.0,                  # huge model/market gaps usually indicate model error or stale data
 ) -> KalshiDecision:
     """
     Decide whether to buy YES or NO on a Kalshi BTC contract.
@@ -172,6 +196,9 @@ def decide_kalshi_trade(
             reasoning=reason,
         )
 
+    if require_implied_prob and implied_prob is None:
+        return _hold("options-implied anchor unavailable; refusing GBM-only entry")
+
     if confidence < min_confidence:
         return _hold(f"confidence {confidence:.2f} below threshold {min_confidence:.2f}")
 
@@ -186,6 +213,17 @@ def decide_kalshi_trade(
 
     buy_yes = exec_edge_yes > min_edge
     buy_no = exec_edge_no > min_edge
+
+    candidate_edge = max(exec_edge_yes if buy_yes else -1.0, exec_edge_no if buy_no else -1.0)
+    if candidate_edge > max_edge:
+        return _hold(
+            f"model edge {candidate_edge:.3f} exceeds calibrated maximum {max_edge:.3f}"
+        )
+
+    if buy_no and not buy_yes and no_exec < min_no_price:
+        return _hold(
+            f"NO execution price {no_exec:.2f} below calibrated floor {min_no_price:.2f}"
+        )
 
     if not buy_yes and not buy_no:
         return _hold(f"edge insufficient (yes={exec_edge_yes:.3f}, no={exec_edge_no:.3f})")

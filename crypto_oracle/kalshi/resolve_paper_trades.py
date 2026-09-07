@@ -61,6 +61,7 @@ async def main() -> None:
     from crypto_oracle.kalshi.backtest import fetch_historical_btc
     from crypto_oracle.kalshi.postmortem import _LOG_PATH
     from crypto_oracle.kalshi import agent_tracker as at
+    from crypto_oracle.kalshi.settlement import yes_outcome_at_settlement
 
     if not _LOG_PATH.exists():
         print("[PAPER-RESOLVE] No postmortem log found — nothing to resolve.")
@@ -118,9 +119,10 @@ async def main() -> None:
             and tte is not None
             and action in ("BUY_YES", "BUY_NO", "HOLD")
         ):
-            if entry.get("is_range"):
+            cap_strike = entry.get("cap_strike")
+            if entry.get("is_range") and cap_strike is None:
                 if not entry.get("resolved") and action != "HOLD":
-                    skipped_range += 1
+                    skipped_range += 1  # legacy rows did not record the range cap
             else:
                 expiry = entered + timedelta(hours=float(tte))
                 # Wait a full hour past expiry so the settlement candle exists
@@ -133,7 +135,9 @@ async def main() -> None:
                         # GBM-calibration outcome for EVERY entry (incl. HOLD):
                         # did BTC finish above the strike?
                         if entry.get("resolved_yes_outcome") is None:
-                            entry["resolved_yes_outcome"] = bool(settle >= strike)
+                            entry["resolved_yes_outcome"] = yes_outcome_at_settlement(
+                                settle, strike, cap_strike
+                            )
                             entry["resolved_settle_price"] = round(settle, 2)
                             resolved_outcomes += 1
                             changed = True
@@ -146,7 +150,8 @@ async def main() -> None:
                             and entry.get("side") in ("yes", "no")
                         ):
                             side = entry["side"]
-                            won = settle >= strike if side == "yes" else settle < strike
+                            yes_won = yes_outcome_at_settlement(settle, strike, cap_strike)
+                            won = yes_won if side == "yes" else not yes_won
                             pnl = (
                                 entry.get("profit_if_win") or 0.0
                                 if won

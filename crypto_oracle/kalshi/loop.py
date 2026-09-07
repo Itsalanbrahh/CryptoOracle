@@ -17,9 +17,16 @@ from crypto_oracle.polymarket.agents import (
 )
 from .client import KalshiClient
 from .deribit import implied_prob_above
-from .market_data import fetch_funding_rate, fetch_realized_vol, funding_tilt
+from .market_data import (
+    fetch_funding_rate,
+    fetch_funding_rate_multi,
+    fetch_realized_vol,
+    funding_tilt,
+    fetch_order_book_depth,
+    fetch_basis_signal,
+)
 from .markets import KalshiMarket, fetch_btc_markets, fetch_btc_range_markets, select_target_markets
-from .strategy import KalshiDecision, decide_kalshi_trade
+from .strategy import KalshiDecision, decide_kalshi_trade, directional_consensus
 from .postmortem import build_entry, log_entry, read_recent
 from . import agent_tracker as at
 from . import position_manager as pm
@@ -136,7 +143,15 @@ async def _run_agents(market: KalshiMarket, spot: float, annual_vol: float | Non
             # Old-style agents don't accept kalshi= kwarg
             return await agent.run(proxy)
 
-    signals = await asyncio.gather(*(_safe_run(agent) for agent in AGENTS))
+    # Filter out disabled agents (set via KALSHI_DISABLED_AGENTS env var)
+    _disabled_raw = os.getenv("KALSHI_DISABLED_AGENTS", "").strip()
+    _disabled_set = {a.strip() for a in _disabled_raw.split(",")} if _disabled_raw else set()
+    _active_agents = [a for a in AGENTS if a.name not in _disabled_set]
+    if _disabled_set:
+        _skipped = [a.name for a in AGENTS if a.name in _disabled_set]
+        print(f"[agents] Skipping {len(_skipped)} disabled agents: {', '.join(_skipped)}")
+
+    signals = await asyncio.gather(*(_safe_run(agent) for agent in _active_agents))
     
     # Normalize: new agents return dicts, old ones return PolymarketSpecialistSignal
     normalized = []
@@ -420,7 +435,14 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
     # Don't enter inside the terminal gamma zone: pricing is most efficient
     # near expiry, the IV interpolation is weakest, and small moves are fatal
     # relative to premium.
-    min_tte_hours = _env_float("KALSHI_MIN_TTE_HOURS", 1.5)
+    min_tte_hours = _env_float("KALSHI_MIN_TTE_HOURS", 4.0)
+    # vNext calibration gates. Historical outcomes showed cheap NO contracts
+    # and claimed >20% edges were model-error traps. Require the professional
+    # options anchor and agreement among the best directional agents.
+    require_iv_anchor = os.getenv("KALSHI_REQUIRE_IV_ANCHOR", "1").strip() == "1"
+    min_no_price = _env_float("KALSHI_MIN_NO_PRICE", 0.25)
+    max_model_edge = _env_float("KALSHI_MAX_MODEL_EDGE", 0.20)
+    min_agent_consensus = _env_int("KALSHI_MIN_AGENT_CONSENSUS", 3)
     # Consistency arb: yes_ask + no_ask below this sum = guaranteed settlement
     # profit buying both sides. Detection always logs; execution (two taker
     # legs, 1 contract) only when KALSHI_ARB_EXECUTE=1.
@@ -460,11 +482,21 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             max_position = max(0.20, round(balance_usd * position_size_pct, 2))
             print(f"[Kalshi/SCAN] balance=${balance_usd:.2f} pct={position_size_pct:.0%} "
                   f"scaled_pos=${max_position:.2f}")
-            # Daily risk = 30% of balance, floored at $1.00 so a sub-$3 account
-            # can actually deploy (30% of $1 is $0.30, below one position).
-            max_daily_risk = max(1.0, round(balance_usd * 0.30, 2))
-            # Entries = balance / $5 per entry, min 5, max 48 (every 30min scan window)
-            max_entries_per_day = max(5, min(48, int(balance_usd / 5)))
+            # Daily risk = balance-based, floored at $1.00 so a sub-$3 account
+            # can deploy. KALSHI_MAX_DAILY_RISK_USD env var caps it above;
+            # for tiny accounts (<$5) use the env var directly to avoid the
+            # 30% bottleneck that makes daily < position size.
+            _env_daily_cap = _env_float("KALSHI_MAX_DAILY_RISK_USD", 999.0)
+            if balance_usd < 5.0:
+                max_daily_risk = max(1.0, _env_daily_cap)
+            else:
+                max_daily_risk = min(_env_daily_cap, max(1.0, round(balance_usd * 0.30, 2)))
+            # Entries = balance / $5 per entry, min 5 for tiny accounts, cap 48
+            _env_entries = _env_int("KALSHI_MAX_ENTRIES_PER_DAY", 0)
+            if _env_entries > 0:
+                max_entries_per_day = _env_entries
+            else:
+                max_entries_per_day = max(10, min(48, int(balance_usd / 5)))
             print(f"[Kalshi/SCAN] daily_risk_cap=${max_daily_risk:.2f} entries_per_day={max_entries_per_day}")
         except Exception as exc:
             # Refuse to trade blind. If the balance fetch fails, the
@@ -481,13 +513,39 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
                 "results": [],
             }
 
-    spot, annual_vol, funding_rate, spot_history, spot_history_14d = await asyncio.gather(
+    spot, annual_vol, funding_rate, spot_history, spot_history_14d, order_book, basis = await asyncio.gather(
         fetch_spot_price(),
         fetch_realized_vol(hours=24),
-        fetch_funding_rate(),
+        fetch_funding_rate_multi(),
         fetch_spot_history(days=1),   # 24h of hourly data — enough for 6h momentum
         fetch_spot_history(days=14),  # 14-day window for regime detection
+        fetch_order_book_depth(),
+        fetch_basis_signal(),
     )
+    # ── LSE macro context (cached, non-blocking) ───────────────────────────
+    macro = {}
+    try:
+        from .lse_provider import get_provider as _get_lse
+        prov = _get_lse()
+        macro = await prov.macro_context()
+    except Exception:
+        pass
+    # Log order book depth signal
+    book_imbalance = order_book.get("imbalance", 0.0)
+    bid_ask_ratio = order_book.get("bid_ask_ratio", 1.0)
+    if abs(book_imbalance) > 0.30:
+        side = "bid-heavy" if book_imbalance > 0 else "ask-heavy"
+        print(f"[LIQUIDITY] Order book {side} (imbalance={book_imbalance:+.2f}, ratio={bid_ask_ratio:.2f})")
+    elif order_book.get("bid_vol", 0) < 10:
+        print(f"[LIQUIDITY] Thin book: bid_vol={order_book.get('bid_vol', 0):.1f} BTC")
+
+    # Log cross-exchange basis signal
+    basis_spread = basis.get("max_spread_bps", 0)
+    if basis_spread > 20:
+        print(f"[BASIS] Cross-exchange spread {basis_spread:.0f} bps — possible divergence")
+        for ex, bps in basis.get("exchanges", {}).items():
+            if abs(bps) > 10:
+                print(f"  {ex}: {bps:+.1f} bps")
     # Funding rate adds a small directional tilt on top of agent aggregate
     fund_tilt = funding_tilt(funding_rate)
 
@@ -685,6 +743,9 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             agg_tilt=agg_tilt,
             implied_prob=implied_prob,
             momentum_block=momentum_block,
+            require_implied_prob=require_iv_anchor,
+            min_no_price=min_no_price,
+            max_edge=max_model_edge,
         )
 
         exec_status = "hold"
@@ -694,20 +755,20 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         # ── Post-decision signal filters (apply in both live and paper modes) ──
         # These convert actionable signals to HOLD based on simulation findings.
         _tech_score = agent_signals.get("TechnicalMarket", {}).get("score", 0.0)
-        if decision.action == "BUY_YES":
+        _consensus_ok, _consensus_count = directional_consensus(
+            agent_signals, decision.side, min_agree=min_agent_consensus
+        )
+        if decision.action != "HOLD" and not _consensus_ok:
             exec_status = "filtered"
-            exec_error = "yes_eliminated: YES trades show negative expected value across 90-day simulation (981 trades, -$1,406)"
+            exec_error = (
+                f"consensus_filter: {_consensus_count}/4 calibrated agents support "
+                f"{decision.side.upper()} (need {min_agent_consensus})"
+            )
         elif decision.action == "BUY_NO" and _uptrend_regime and market.strike > spot:
             exec_status = "filtered"
             exec_error = (
                 f"regime_filter: BTC +{btc_14d_return:.1%} in 14d; "
                 f"above-spot NO adversarial in uptrend (strike=${market.strike:,.0f})"
-            )
-        elif decision.action == "BUY_NO" and _tech_score >= 0:
-            exec_status = "filtered"
-            exec_error = (
-                f"tech_gate: TechnicalMarket={_tech_score:+.3f} (not bearish); "
-                f"NO requires bearish technical confirmation (+8.8pp WR when negative)"
             )
         elif decision.action != "HOLD" and _overnight_window and not overnight_entry_allowed:
             exec_status = "filtered"
@@ -848,6 +909,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             exec_status=exec_status,
             exec_error=exec_error,
             reasoning=decision.reasoning,
+            cap_strike=market.cap_strike,
         )
         log_entry(_pm_entry)
 
@@ -894,6 +956,7 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
         "momentum_trigger": round(momentum_trigger, 4),
         "btc_14d_return": round(btc_14d_return, 4),
         "uptrend_regime": _uptrend_regime,
+        "macro_context": macro,
         "min_strike_distance_pct": min_strike_dist,
         "target_no_price": target_no_price,
         "results": results,
