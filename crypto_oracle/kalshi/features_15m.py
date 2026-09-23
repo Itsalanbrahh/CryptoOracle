@@ -29,6 +29,8 @@ FEATURE_KEYS: list[str] = [
     "combined_ofi",
     "funding_rate_8h",
     "path_change_bps",
+    "ws_trade_imbalance",
+    "brti_proxy_distance_bps",
 ]
 
 
@@ -100,10 +102,24 @@ def build_feature_vector(
         "combined_ofi": _f("combined_ofi"),
         "funding_rate_8h": float(funding_rate or 0.0),
         "path_change_bps": round(path_change_bps, 2),
+        "ws_trade_imbalance": _f("ws_trade_imbalance"),
+        "brti_proxy_distance_bps": 0.0,
     }
-    # Ensure every key present
+    brti_proxy = micro.get("brti_proxy") if micro else None
+    if brti_proxy and target > 0:
+        try:
+            feats["brti_proxy_distance_bps"] = round(
+                (float(brti_proxy) - target) / target * 10_000.0, 2
+            )
+        except (TypeError, ValueError):
+            pass
+    # Prefer WS trade imbalance inside combined_ofi when present
+    if feats["ws_trade_imbalance"] != 0.0:
+        feats["combined_ofi"] = round(
+            0.5 * feats["combined_ofi"] + 0.5 * feats["ws_trade_imbalance"], 4
+        )
     return {k: float(feats.get(k, 0.0)) for k in FEATURE_KEYS}
 
 
 def vector_as_list(feats: dict[str, float]) -> list[float]:
-    return [float(feats[k]) for k in FEATURE_KEYS]
+    return [float(feats.get(k, 0.0)) for k in FEATURE_KEYS]

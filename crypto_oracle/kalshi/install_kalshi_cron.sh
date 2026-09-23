@@ -34,6 +34,9 @@ SCAN_CRON="${KALSHI_SCAN_CRON:-*/30 * * * *}"
 HEARTBEAT_CRON="${KALSHI_HEARTBEAT_CRON:-*/15 * * * *}"
 CAL_HOUR="${KALSHI_CAL_HOUR:-18}"
 CAL_CRON="0 ${CAL_HOUR} * * *"
+# 15m paper path — every 2 minutes (override with KALSHI_15M_PAPER_CRON)
+PAPER_15M_CRON="${KALSHI_15M_PAPER_CRON:-*/2 * * * *}"
+LEARN_15M_CRON="${KALSHI_15M_LEARN_CRON:-17 * * * *}"
 
 list_jobs() {
     crontab -l 2>/dev/null | grep "$TAG" || echo "(no kalshi-oracle cron jobs installed)"
@@ -73,7 +76,9 @@ cp "$SCRIPT_DIR/kalshi_live_trade.py"        "$DEPLOY_DIR/"
 cp "$SCRIPT_DIR/kalshi_position_heartbeat.py" "$DEPLOY_DIR/"
 chmod +x "$SCRIPT_DIR"/kalshi_live_trade.sh \
          "$SCRIPT_DIR"/kalshi_position_heartbeat.sh \
-         "$SCRIPT_DIR"/kalshi_confidence_calibration.sh 2>/dev/null || true
+         "$SCRIPT_DIR"/kalshi_confidence_calibration.sh \
+         "$SCRIPT_DIR"/kalshi_15m_paper.sh \
+         "$SCRIPT_DIR"/kalshi_15m_learn.sh 2>/dev/null || true
 
 # ── Build the new crontab: existing lines (minus ours) + fresh kalshi jobs ──
 {
@@ -81,12 +86,16 @@ chmod +x "$SCRIPT_DIR"/kalshi_live_trade.sh \
     echo "$SCAN_CRON $SCRIPT_DIR/kalshi_live_trade.sh >> $LOG_DIR/kalshi_live_trade.log 2>&1 $TAG"
     echo "$HEARTBEAT_CRON $SCRIPT_DIR/kalshi_position_heartbeat.sh >> $LOG_DIR/kalshi_heartbeat.log 2>&1 $TAG"
     echo "$CAL_CRON $SCRIPT_DIR/kalshi_confidence_calibration.sh >> $LOG_DIR/kalshi_calibration.log 2>&1 $TAG"
+    echo "$PAPER_15M_CRON $SCRIPT_DIR/kalshi_15m_paper.sh >> $LOG_DIR/kalshi_15m_paper.log 2>&1 $TAG"
+    echo "$LEARN_15M_CRON $SCRIPT_DIR/kalshi_15m_learn.sh >> $LOG_DIR/kalshi_15m_learn.log 2>&1 $TAG"
 } | crontab -
 
 echo "Installed kalshi-oracle cron jobs (repo: $REPO_ROOT):"
-echo "  entry scan        $SCAN_CRON"
+echo "  entry scan         $SCAN_CRON"
 echo "  position heartbeat $HEARTBEAT_CRON"
-echo "  calibration       $CAL_CRON  (hour is intended UTC)"
+echo "  calibration        $CAL_CRON  (hour is intended UTC)"
+echo "  15m paper+learn    $PAPER_15M_CRON"
+echo "  15m learn-only     $LEARN_15M_CRON"
 echo "Logs → $LOG_DIR/kalshi_*.log"
 echo
 list_jobs

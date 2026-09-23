@@ -47,6 +47,7 @@ def _gates() -> dict:
 async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
     from crypto_oracle.kalshi.belief_15m import blend_belief
     from crypto_oracle.kalshi import feature_store as fs
+    from crypto_oracle.kalshi.feeds_ws import collect_live_feeds
     from crypto_oracle.kalshi.jev_15m import evaluate_15m_market
     from crypto_oracle.kalshi.jev_client import jev_enabled
     from crypto_oracle.kalshi.market_data import (
@@ -79,8 +80,20 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
         fetch_microstructure(),
     )
 
-    newly_labeled = fs.label_settled(settle_spot=spot)
+    # Official Kalshi result labels first; spot only as late fallback
+    newly_labeled = await fs.label_settled_async(settle_spot=spot)
     settled = settle_due_positions(acct, settle_spot=spot)
+
+    # Live WS trade flow (+ optional Kalshi book if API key present)
+    active_ticker = markets[0].ticker if markets else None
+    live = await collect_live_feeds(ticker=active_ticker)
+    micro = dict(micro or {})
+    micro.update(live.as_micro_overlay())
+    if live.brti_proxy:
+        # Prefer multi-venue WS mid as BRTI proxy for distance features
+        spot_for_features = live.brti_proxy
+    else:
+        spot_for_features = spot
 
     min_edge = float(gates.get("min_edge", 0.08))
     min_confidence = float(gates.get("min_confidence", 0.55))
@@ -111,14 +124,14 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
 
         judgment = await evaluate_15m_market(
             market,
-            spot=spot,
+            spot=spot_for_features,
             annual_vol=vol,
             funding_rate=funding,
             recent_closes=closes,
         )
         belief = blend_belief(
             market,
-            spot=spot,
+            spot=spot_for_features,
             annual_vol=vol,
             funding_rate=funding,
             recent_closes=closes,
@@ -134,7 +147,7 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
             market,
             aggregate=0.0,
             confidence=confidence,
-            spot=spot,
+            spot=spot_for_features,
             annual_vol=vol,
             max_position_usd=max_position,
             min_edge=min_edge,
@@ -175,7 +188,7 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
                 jev_p_up=judgment.p_settle_up,
                 jev_action=judgment.action,
                 jev_model=judgment.model,
-                spot_at_entry=spot,
+                spot_at_entry=spot_for_features,
             )
             if pos is None:
                 status = "skip_duplicate_or_underfunded"
@@ -207,9 +220,12 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
             "confidence": confidence,
             "yes_ask": market.yes_ask,
             "no_ask": market.no_ask,
-            "spot": spot,
+            "spot": spot_for_features,
+            "spot_raw": spot,
+            "brti_proxy": live.brti_proxy,
             "features": belief.features,
             "micro_ok": bool(micro.get("ok")),
+            "ws_ok": live.ok,
             "gates": {"min_edge": min_edge, "min_confidence": min_confidence},
         })
 
@@ -235,8 +251,8 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
 
     learn_report = None
     if do_learn:
-        from crypto_oracle.kalshi.learn_15m import run as learn_run
-        learn_report = learn_run(spot=spot)
+        from crypto_oracle.kalshi.learn_15m import run_async as learn_run
+        learn_report = await learn_run(spot=spot)
 
     out = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -250,7 +266,12 @@ async def run_cycle(*, verbose: bool = True, do_learn: bool = False) -> dict:
             "binance_imbalance": micro.get("binance_imbalance"),
             "binance_trade_imbalance": micro.get("binance_trade_imbalance"),
             "venue_disp_bps": micro.get("venue_mid_dispersion_bps"),
+            "ws_trade_imbalance": micro.get("ws_trade_imbalance"),
+            "ws_ok": live.ok,
+            "brti_proxy": live.brti_proxy,
+            "kalshi_book_ok": live.kalshi_book.ok,
         },
+        "label_counts": fs.label_counts(),
         "gates": gates,
         "newly_labeled": newly_labeled,
         "settled": [

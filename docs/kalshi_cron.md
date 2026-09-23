@@ -29,6 +29,17 @@ KALSHI_SCAN_CRON='*/20 * * * *' KALSHI_CAL_HOUR=19 \
 
 ## 15-minute UP/DOWN (KXBTC15M) + Jev
 
+Installed by `install_kalshi_cron.sh`:
+
+| Job | Default | Script |
+| --- | --- | --- |
+| 15m paper cycle | every 2 min | `kalshi_15m_paper.sh` |
+| 15m learn | :17 past each hour | `kalshi_15m_learn.sh` |
+
+Labels prefer official Kalshi `result` / `expiration_value` (BRTI settlement). Each paper cycle samples Coinbase/Kraken trade websockets (~6s) and REST OFI.
+
+## 15-minute UP/DOWN (KXBTC15M) + Jev
+
 Hourly `*/30` scans miss most of a 15-minute window. For `KXBTC15M`, run a
 dedicated paper/live scanner every 1–2 minutes:
 

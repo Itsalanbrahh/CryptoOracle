@@ -74,6 +74,11 @@ class KalshiClient:
         data = await self._get("/markets", params={"series_ticker": series_ticker, "status": status, "limit": limit})
         return data.get("markets", [])
 
+    async def get_market(self, ticker: str) -> dict:
+        """Public single-market lookup."""
+        data = await self._get(f"/markets/{ticker}")
+        return data.get("market") or data
+
     async def get_balance(self) -> dict:
         return await self._get("/portfolio/balance", auth=True)
 

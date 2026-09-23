@@ -146,14 +146,14 @@ async def _spot() -> float:
     return await fetch_spot_price()
 
 
-def run(spot: float | None = None) -> dict:
+async def run_async(spot: float | None = None) -> dict:
     from crypto_oracle.kalshi import feature_store as fs
     from crypto_oracle.kalshi.residual_model import train_from_rows
 
     if spot is None:
-        spot = asyncio.run(_spot())
+        spot = await _spot()
 
-    newly = fs.label_settled(settle_spot=float(spot))
+    newly = await fs.label_settled_async(settle_spot=float(spot))
     rows = fs.labeled_training_rows()
     train = train_from_rows(rows)
     gates = retune_gates(rows)
@@ -188,6 +188,7 @@ def run(spot: float | None = None) -> dict:
         "spot_used_for_labels": spot,
         "newly_labeled": newly,
         "labeled_total": len(rows),
+        "label_counts": fs.label_counts(),
         "feature_store": str(fs.store_path()),
         "train": train,
         "gates": gates,
@@ -201,11 +202,22 @@ def run(spot: float | None = None) -> dict:
     return report
 
 
+def run(spot: float | None = None) -> dict:
+    try:
+        asyncio.get_running_loop()
+        running = True
+    except RuntimeError:
+        running = False
+    if running:
+        raise RuntimeError("learn_15m.run() called inside a running event loop; use await run_async()")
+    return asyncio.run(run_async(spot=spot))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--spot", type=float, default=None)
     args = parser.parse_args()
-    report = run(spot=args.spot)
+    report = asyncio.run(run_async(spot=args.spot))
     print(json.dumps(report, indent=2, default=str))
 
 
