@@ -84,6 +84,39 @@ async def fetch_funding_rate() -> float:
         return 0.0
 
 
+async def fetch_recent_1m_closes(minutes: int = 20) -> list[float]:
+    """Recent 1-minute BTC closes from Kraken (Coinbase fallback). Oldest → newest."""
+    limit = max(5, min(minutes + 1, 60))
+    async with aiohttp.ClientSession() as session:
+        try:
+            url = "https://api.kraken.com/0/public/OHLC"
+            async with session.get(
+                url,
+                params={"pair": "XBTUSD", "interval": 1},
+                timeout=aiohttp.ClientTimeout(total=12),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            rows = data.get("result", {}).get("XXBTZUSD", [])
+            return [float(row[4]) for row in rows[-limit:]]
+        except Exception:
+            pass
+        try:
+            url = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+            async with session.get(
+                url,
+                params={"granularity": 60},
+                timeout=aiohttp.ClientTimeout(total=12),
+            ) as resp:
+                resp.raise_for_status()
+                rows = await resp.json()
+            closes = [float(row[4]) for row in reversed(rows[-limit:])]
+            return closes
+        except Exception:
+            pass
+    return []
+
+
 def funding_tilt(funding_rate_8h: float) -> float:
     """
     Convert 8h funding rate to a directional tilt in [-0.10, +0.10].

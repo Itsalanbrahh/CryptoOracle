@@ -17,12 +17,25 @@ from crypto_oracle.polymarket.agents import (
 )
 from .client import KalshiClient
 from .deribit import implied_prob_above
-from .market_data import fetch_funding_rate, fetch_realized_vol, funding_tilt
-from .markets import KalshiMarket, fetch_btc_markets, fetch_btc_range_markets, select_target_markets
+from .market_data import (
+    fetch_funding_rate,
+    fetch_realized_vol,
+    fetch_recent_1m_closes,
+    funding_tilt,
+)
+from .markets import (
+    KalshiMarket,
+    fetch_btc_15m_markets,
+    fetch_btc_markets,
+    fetch_btc_range_markets,
+    select_target_markets,
+)
 from .strategy import KalshiDecision, decide_kalshi_trade
 from .postmortem import build_entry, log_entry, read_recent
 from . import agent_tracker as at
 from . import position_manager as pm
+from .jev_15m import evaluate_15m_market
+from .jev_client import jev_enabled
 from .agents import (
     KronosMarketAgent,
     FibonacciRetracementAgent,
@@ -349,6 +362,317 @@ def _select_with_expiry_diversification(
                 remaining -= 1
 
     return result[:top_n]
+
+
+async def _execute_decision_live(
+    *,
+    market: KalshiMarket,
+    decision: KalshiDecision,
+    confidence: float,
+    spot: float,
+    live: bool,
+    max_daily_risk: float,
+    max_entries_per_day: int,
+    entries_today: int,
+    deployed_today: float,
+) -> tuple[str, str | None, str | None, int, float, int, float]:
+    """Shared live-order path. Returns exec_status, exec_error, order_id, trades_delta, deployed_delta, entries, deployed."""
+    exec_status = "hold"
+    exec_error = None
+    order_id = None
+    trades_delta = 0
+    deployed_delta = 0.0
+
+    if decision.action == "HOLD":
+        return exec_status, exec_error, order_id, trades_delta, deployed_delta, entries_today, deployed_today
+
+    if not live:
+        return "paper", None, None, 0, 0.0, entries_today, deployed_today
+
+    _event_ticker = market.ticker.split("-")[0] + "-" + market.ticker.split("-")[1]
+    if decision.action == "BUY_NO":
+        _open_no_for_event = sum(
+            1 for p in pm.get_open_positions()
+            if p.get("side") == "no" and p.get("event_ticker") == _event_ticker
+        )
+        _max_no_per_expiry = _env_int("KALSHI_MAX_NO_PER_EXPIRY", 2)
+        if _open_no_for_event >= _max_no_per_expiry:
+            return (
+                "hold",
+                (
+                    f"corr_cap: {_open_no_for_event} NO positions already open "
+                    f"for expiry {_event_ticker} (max={_max_no_per_expiry})"
+                ),
+                None,
+                0,
+                0.0,
+                entries_today,
+                deployed_today,
+            )
+
+    if deployed_today + decision.position_usd > max_daily_risk:
+        return (
+            "hold",
+            (
+                f"daily_risk_cap: ${deployed_today:.2f} deployed today "
+                f"+ ${decision.position_usd:.2f} would exceed ${max_daily_risk:.2f} limit"
+            ),
+            None,
+            0,
+            0.0,
+            entries_today,
+            deployed_today,
+        )
+    if entries_today >= max_entries_per_day:
+        return (
+            "hold",
+            f"max_entries_per_day: {entries_today}/{max_entries_per_day} reached",
+            None,
+            0,
+            0.0,
+            entries_today,
+            deployed_today,
+        )
+
+    key_id = os.getenv("KALSHI_API_KEY_ID", "")
+    if not key_id:
+        return "error", "KALSHI_API_KEY_ID not set", None, 0, 0.0, entries_today, deployed_today
+
+    try:
+        client = KalshiClient(key_id=key_id)
+        resp = await client.place_order(
+            ticker=decision.ticker,
+            side=decision.side,
+            count=decision.count,
+            price_cents=decision.price_cents,
+        )
+        order_id = resp.get("order", {}).get("order_id") or resp.get("order_id")
+        _order_status = (resp.get("order") or {}).get("status", "")
+        pos = pm.make_position(
+            ticker=decision.ticker,
+            side=decision.side,
+            count=decision.count,
+            entry_price=decision.price,
+            strike=decision.strike,
+            event_ticker=_event_ticker,
+            order_id=order_id,
+            edge=decision.edge,
+            confidence=confidence,
+            spot_at_entry=spot,
+        )
+        pos["order_pending"] = _order_status != "executed"
+        pm.save_new_position(pos)
+        entries_today = pm.get_entry_count_today()
+        deployed_today = pm.get_today_deployed_usd()
+        return "submitted", None, order_id, 1, decision.position_usd, entries_today, deployed_today
+    except Exception as exc:
+        return "error", str(exc)[:200], None, 0, 0.0, entries_today, deployed_today
+
+
+async def _scan_15m_markets(
+    *,
+    spot: float,
+    annual_vol: float,
+    funding_rate: float,
+    live: bool,
+    max_position: float,
+    max_daily_risk: float,
+    max_entries_per_day: int,
+    entries_today: int,
+    deployed_today: float,
+    maker_mode: bool,
+    kalshi_balance_cents: int | None,
+) -> tuple[list[dict], int, float, int, float]:
+    """
+    Jev-ranked entries on KXBTC15M UP/DOWN.
+
+    Returns (results, trades_executed, total_deployed, entries_today, deployed_today).
+    """
+    enabled = os.getenv("KALSHI_15M_ENABLED", "1").strip() != "0"
+    if not enabled:
+        return [], 0, 0.0, entries_today, deployed_today
+
+    markets = await fetch_btc_15m_markets(min_volume=_env_float("KALSHI_15M_MIN_VOLUME", 0.0))
+    if not markets:
+        return [], 0, 0.0, entries_today, deployed_today
+
+    # Skip when almost no time left — convexity / settlement noise dominates.
+    min_minutes = _env_float("KALSHI_15M_MIN_MINUTES_LEFT", 0.5)
+    max_minutes = _env_float("KALSHI_15M_MAX_MINUTES_LEFT", 14.5)
+    markets = [
+        m for m in markets
+        if min_minutes <= (m.hours_to_expiry * 60.0) <= max_minutes
+    ]
+    if not markets:
+        return [], 0, 0.0, entries_today, deployed_today
+
+    recent_closes = await fetch_recent_1m_closes(minutes=20)
+    min_edge = _env_float("KALSHI_15M_MIN_EDGE", 0.08)
+    min_confidence = _env_float("KALSHI_15M_MIN_CONFIDENCE", 0.55)
+    # 15m target IS the opening BRTI — distance-to-strike is the signal, not a filter.
+    min_strike_dist = 0.0
+
+    results: list[dict] = []
+    trades_executed = 0
+    total_deployed = 0.0
+
+    for market in markets:
+        judgment = await evaluate_15m_market(
+            market,
+            spot=spot,
+            annual_vol=annual_vol,
+            funding_rate=funding_rate,
+            recent_closes=recent_closes,
+        )
+        agent_signals = {
+            "Jev15m": {
+                "score": round(judgment.aggregate, 4),
+                "confidence": round(judgment.confidence, 4),
+                "p_settle_up": round(judgment.p_settle_up, 4),
+                "action": judgment.action,
+                "model": judgment.model,
+            }
+        }
+
+        # Jev as probability anchor (Deribit IV is meaningless at 15m).
+        # aggregate=0 → belief_yes = implied_prob = Jev Noul.
+        decision = decide_kalshi_trade(
+            market,
+            aggregate=0.0,
+            confidence=judgment.confidence,
+            spot=spot,
+            annual_vol=annual_vol,
+            max_position_usd=max_position,
+            min_edge=min_edge,
+            min_confidence=min_confidence,
+            min_strike_distance_pct=min_strike_dist,
+            momentum_trigger=0.0,
+            divergence_cut=1.0,
+            maker_mode=maker_mode,
+            agg_tilt=0.0,
+            implied_prob=judgment.p_settle_up,
+        )
+
+        exec_status = "hold"
+        exec_error = None
+        order_id = None
+
+        # Honor Jev's hold / side veto. Also refuse to flip sides when the
+        # fee-aware gate prefers the opposite contract from Jev's choice.
+        if judgment.action == "hold":
+            if decision.action != "HOLD":
+                exec_status = "filtered"
+                exec_error = f"jev_hold: {judgment.reasoning}"
+            # else already HOLD
+        elif judgment.action == "buy_yes" and decision.action != "BUY_YES":
+            exec_status = "filtered"
+            exec_error = (
+                f"jev_side_gate: jev=buy_yes but decision={decision.action} "
+                f"(need YES edge ≥ {min_edge:.2f})"
+            )
+        elif judgment.action == "buy_no" and decision.action != "BUY_NO":
+            exec_status = "filtered"
+            exec_error = (
+                f"jev_side_gate: jev=buy_no but decision={decision.action} "
+                f"(need NO edge ≥ {min_edge:.2f})"
+            )
+        elif live and not jev_enabled() and os.getenv("KALSHI_15M_REQUIRE_JEV", "1").strip() != "0":
+            exec_status = "filtered"
+            exec_error = "jev_required: set TYPESAFE_API_KEY before live 15m entries"
+        elif decision.action != "HOLD":
+            (
+                exec_status,
+                exec_error,
+                order_id,
+                trades_delta,
+                deployed_delta,
+                entries_today,
+                deployed_today,
+            ) = await _execute_decision_live(
+                market=market,
+                decision=decision,
+                confidence=judgment.confidence,
+                spot=spot,
+                live=live,
+                max_daily_risk=max_daily_risk,
+                max_entries_per_day=max_entries_per_day,
+                entries_today=entries_today,
+                deployed_today=deployed_today,
+            )
+            trades_executed += trades_delta
+            total_deployed += deployed_delta
+
+        _pm_entry = build_entry(
+            ticker=decision.ticker,
+            strike=decision.strike,
+            is_range=False,
+            side=decision.side if decision.action != "HOLD" else None,
+            action=decision.action if exec_status != "filtered" else "HOLD",
+            count=decision.count if exec_status not in ("filtered", "hold") else 0,
+            entry_price=decision.price if decision.action != "HOLD" else None,
+            position_usd=decision.position_usd,
+            profit_if_win=decision.profit_if_win,
+            order_id=order_id,
+            agent_signals=agent_signals,
+            aggregate=judgment.aggregate,
+            confidence=judgment.confidence,
+            edge=decision.edge,
+            gbm_baseline=judgment.p_settle_up,
+            belief_yes=judgment.p_settle_up,
+            market_yes_price=market.mid,
+            spot_price=spot,
+            realized_vol=annual_vol,
+            funding_rate=funding_rate,
+            funding_tilt=0.0,
+            hours_to_expiry=market.hours_to_expiry,
+            gate_blocked=exec_error if exec_status in ("hold", "error", "filtered") else None,
+            daily_deployed_usd=deployed_today,
+            daily_trades=entries_today,
+            daily_cap_usd=max_daily_risk,
+            max_trades=max_entries_per_day,
+            balance_usd=kalshi_balance_cents / 100 if kalshi_balance_cents is not None else None,
+            exec_status=exec_status,
+            exec_error=exec_error,
+            reasoning=f"{judgment.reasoning} | {decision.reasoning}",
+        )
+        # Tag series for postmortem / calibration filters
+        _pm_entry["series"] = "KXBTC15M"
+        _pm_entry["jev_model"] = judgment.model
+        _pm_entry["jev_action"] = judgment.action
+        log_entry(_pm_entry)
+
+        results.append({
+            "ticker": decision.ticker,
+            "strike": decision.strike,
+            "series": "KXBTC15M",
+            "action": decision.action,
+            "side": decision.side,
+            "market_mid": market.mid,
+            "exec_price": decision.price,
+            "count": decision.count,
+            "position_usd": decision.position_usd,
+            "profit_if_win": decision.profit_if_win,
+            "confidence": decision.confidence,
+            "edge": decision.edge,
+            "agent_signals": agent_signals,
+            "jev": {
+                "p_settle_up": judgment.p_settle_up,
+                "action": judgment.action,
+                "model": judgment.model,
+                "reasoning": judgment.reasoning,
+            },
+            "reasoning": f"{judgment.reasoning} | {decision.reasoning}",
+            "exec_status": exec_status,
+            "exec_error": exec_error,
+            "order_id": order_id,
+        })
+        print(
+            f"[Kalshi/15M] {market.ticker} jev={judgment.action} "
+            f"p_up={judgment.p_settle_up:.3f} decision={decision.action} "
+            f"edge={decision.edge:.3f} status={exec_status}"
+        )
+
+    return results, trades_executed, total_deployed, entries_today, deployed_today
 
 
 async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
@@ -782,12 +1106,41 @@ async def run_kalshi_scan(limit: int = 8, live: bool = False) -> dict:
             "order_id": order_id,
         })
 
+    # ── 15-minute UP/DOWN (KXBTC15M) — Jev picks side / whether to enter ─────
+    try:
+        (
+            results_15m,
+            trades_15m,
+            deployed_15m,
+            entries_today,
+            deployed_today,
+        ) = await _scan_15m_markets(
+            spot=spot,
+            annual_vol=annual_vol,
+            funding_rate=funding_rate,
+            live=live,
+            max_position=max_position,
+            max_daily_risk=max_daily_risk,
+            max_entries_per_day=max_entries_per_day,
+            entries_today=entries_today,
+            deployed_today=deployed_today,
+            maker_mode=maker_mode,
+            kalshi_balance_cents=kalshi_balance_cents,
+        )
+        results.extend(results_15m)
+        trades_executed += trades_15m
+        total_deployed += deployed_15m
+    except Exception as exc:
+        print(f"[Kalshi/15M] scan failed (non-fatal): {exc}")
+        results_15m = []
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "platform": "kalshi",
         "mode": "live" if live else "paper",
         "spot_price": spot,
-        "markets_scanned": len(selected),
+        "markets_scanned": len(selected) + len(results_15m),
+        "markets_15m": len(results_15m),
         "positions_open": pm.get_open_count(),
         "trades_executed": trades_executed,
         "positions_closed": len(closed_positions),

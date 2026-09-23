@@ -27,6 +27,28 @@ KALSHI_SCAN_CRON='*/20 * * * *' KALSHI_CAL_HOUR=19 \
   crypto_oracle/kalshi/install_kalshi_cron.sh
 ```
 
+## 15-minute UP/DOWN (KXBTC15M) + Jev
+
+Hourly `*/30` scans miss most of a 15-minute window. For `KXBTC15M`, run a
+dedicated paper/live scanner every 1–2 minutes:
+
+```bash
+*/2 * * * * cd /path/to/CryptoOracle && .venv/bin/python -m crypto_oracle.kalshi.kalshi_15m_scan >> ~/.hermes/logs/kalshi_15m.log 2>&1
+```
+
+Requires `TYPESAFE_API_KEY` (or `JEV_API_KEY`). Without a key the scanner still
+runs using a GBM-distance heuristic and tags `model=heuristic-fallback` in the
+postmortem so you can tell live Jev apart from the fallback.
+
+Jev answers two questions per open 15m contract:
+
+1. **Noul** `settle_up` — P(ending BRTI ≥ opening target)
+2. **Choice** `action` — `buy_yes` / `buy_no` / `hold`
+
+The fee-aware edge gate (`KALSHI_15M_MIN_EDGE`, default 0.08) still must clear
+before an order is sized. Hourly-only filters (YES elimination, TechnicalMarket
+NO gate, 2% strike-distance) do **not** apply to 15m.
+
 ## Timing note
 
 Calibration's `18:00` is intended as **UTC** — just after the 17:00 UTC daily
