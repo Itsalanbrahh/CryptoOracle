@@ -91,6 +91,34 @@ async def fetch_btc_range_markets(min_volume: float = 50.0) -> list[KalshiMarket
     return sorted(markets, key=lambda m: m.volume, reverse=True)
 
 
+async def fetch_btc_15m_markets(min_volume: float = 0.0) -> list[KalshiMarket]:
+    """Fetch active Kalshi 15-minute BTC UP/DOWN markets (KXBTC15M).
+
+    These settle on CF Benchmarks BRTI open/close averages for a 15-minute
+    window. ``floor_strike`` is the opening target. Liquidity filters are looser
+    than hourly markets because only one contract is typically open at a time
+    and volume accrues fast inside the window.
+    """
+    client = KalshiClient()
+    raw_markets = await client.get_markets(series_ticker="KXBTC15M", status="open", limit=50)
+    markets: list[KalshiMarket] = []
+    for raw in raw_markets:
+        m = _parse_market(raw)
+        if not m:
+            continue
+        # 15m books can be one-sided near expiry; require a real two-sided quote
+        # but do not demand the hourly ``is_liquid`` volume floor.
+        if m.yes_bid <= 0.0 or m.yes_ask >= 1.0:
+            continue
+        if m.volume < min_volume:
+            continue
+        # Skip already-expired / sub-second leftovers
+        if m.hours_to_expiry <= 0.0:
+            continue
+        markets.append(m)
+    return sorted(markets, key=lambda m: m.hours_to_expiry)
+
+
 def select_target_markets(markets: list[KalshiMarket], spot_price: float, top_n: int = 8) -> list[KalshiMarket]:
     """
     Rank markets for edge potential.

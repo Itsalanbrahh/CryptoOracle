@@ -123,26 +123,39 @@ def _never_filled(p: dict) -> bool:
 
 
 def get_entry_count_today() -> int:
-    """Number of new positions opened today (for entry cap).
+    """Number of bot-placed positions opened today (for entry cap).
 
-    Never-filled entries don't count — an order that rested and was canceled
-    shouldn't consume the daily entry budget.
+    Excludes manual trades and never-filled entries — an order that rested
+    and was canceled shouldn't consume the daily entry budget.
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return sum(
         1 for p in _load_all()
-        if p.get("entered_at", "").startswith(today) and not _never_filled(p)
+        if (
+            p.get("entered_at", "").startswith(today)
+            and not _never_filled(p)
+            and p.get("confidence", 0) > 0  # bot-placed only
+            and p.get("edge", 0) > 0         # bot-placed only
+        )
     )
 
 
 def get_today_deployed_usd() -> float:
-    """Sum of entry costs for positions opened today (excluding never-filled)."""
+    """Sum of entry costs (in dollars) for bot-placed positions opened today.
+    Excludes manual trades and never-filled orders.
+    """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return round(sum(
+    total_cents = sum(
         p["entry_price"] * p["count"]
         for p in _load_all()
-        if p.get("entered_at", "").startswith(today) and not _never_filled(p)
-    ), 2)
+        if (
+            p.get("entered_at", "").startswith(today)
+            and not _never_filled(p)
+            and p.get("confidence", 0) > 0  # bot-placed only
+            and p.get("edge", 0) > 0         # bot-placed only
+        )
+    )
+    return round(total_cents / 100.0, 2)
 
 
 def save_new_position(pos: dict) -> None:
