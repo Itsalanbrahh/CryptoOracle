@@ -107,6 +107,38 @@ async def fetch_spot_history(days: int = 90) -> list[float]:
     raise RuntimeError('could not fetch BTC spot history from any source')
 
 
+async def fetch_hourly_btc(hours: int = 6) -> list[dict]:
+    """Fetch recent *completed* hourly BTC candles via Kraken interval=60.
+
+    Returns a list of ``{"ts": datetime, "close": float}`` dicts sorted
+    oldest → newest.  Exactly ``hours`` entries are returned where possible.
+
+    The in-progress (unclosed) candle is excluded so every entry represents
+    a finalized, immutable hourly close — safe for momentum calculations that
+    must not see the current-tick price.
+    """
+    async with aiohttp.ClientSession() as session:
+        try:
+            url = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=60'
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            rows = data.get('result', {}).get('XXBTZUSD', [])
+            # Kraken appends the in-progress (unclosed) candle at the end — drop it.
+            completed = rows[:-1] if len(rows) > 1 else rows
+            candles = [
+                {
+                    'ts': datetime.fromtimestamp(int(r[0]), tz=timezone.utc),
+                    'close': float(r[4]),
+                }
+                for r in completed
+            ]
+            return candles[-hours:] if len(candles) >= hours else candles
+        except Exception:
+            pass
+    return []
+
+
 def realized_volatility(prices: list[float], lookback: int = 30) -> float:
     if len(prices) < lookback + 1:
         return 0.0

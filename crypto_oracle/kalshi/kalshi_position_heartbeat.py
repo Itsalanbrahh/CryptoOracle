@@ -110,58 +110,30 @@ async def main() -> None:
                      and "settled" in p.get("close_reason", "")
                      and not p.get("postmortem_logged")]
     if newly_expired:
-        # Fetch BTC price to determine if positions expired ITM vs OTM
-        import aiohttp
-        btc_now = 0.0
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(
-                    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as r:
-                    btc_data = await r.json()
-                    btc_now = btc_data.get("bitcoin", {}).get("usd", 0)
-        except Exception:
-            pass
-
+        # Without an official Kalshi settlement record (from /portfolio/settlements),
+        # we cannot determine ITM/OTM or compute P&L accurately.
+        # The current spot price (CoinGecko or Kraken) is NOT a reliable proxy —
+        # the BTC price at settlement time could differ significantly.
+        # Leave realized_pnl as None (unknown) until official settlement is fetched.
         for p in newly_expired:
-            cost = (p.get("entry_price", 0) or 0) * (p.get("count", 0) or 0)
-            strike = p.get("strike", 0)
-            side = p.get("side", "no")
-
-            # Determine ITM/OTM using current BTC vs strike (best proxy without API)
-            if btc_now > 0 and strike > 0:
-                if side == "no":
-                    # NO = bet BTC stays BELOW strike
-                    itm = btc_now <= strike
-                else:
-                    # YES = bet BTC goes ABOVE strike
-                    itm = btc_now >= strike
-                if itm:
-                    realized_pnl = round((1.0 - (p.get("entry_price", 0) or 0)) * p.get("count", 0), 2)
-                    reason_str = "expired_itm"
-                else:
-                    realized_pnl = -round(cost, 2)
-                    reason_str = "expired_otm"
-            else:
-                realized_pnl = -round(cost, 2)
-                reason_str = "expired_otm (unknown settlement)"
-
-            p["realized_pnl"] = realized_pnl
-            p["close_price"] = 1.0 if "itm" in reason_str else 0.0
+            p["realized_pnl"] = None
+            p["close_price"] = None
+            p["settlement_source"] = "pending_official"
+            p["fill_confirmed"] = False
 
             log_close_event(
                 ticker=p["ticker"],
                 count=p.get("count", 0),
-                side=side,
-                close_price=p["close_price"],
-                reason=f"{reason_str} ({p.get('close_reason', 'settled')})",
+                side=p.get("side", "no"),
+                close_price=0.0,
+                reason=f"expired_unknown (awaiting official Kalshi settlement record)",
                 entry_price=p.get("entry_price", 0) or 0,
-                realized_pnl=realized_pnl,
+                realized_pnl=None,
             )
             p["postmortem_logged"] = True
-            print(f"[Kalshi/HEARTBEAT] LOGGED EXPIRY {p['ticker']} — pnl=${realized_pnl:.2f} ({reason_str})")
+            print(f"[Kalshi/HEARTBEAT] LOGGED EXPIRY {p['ticker']} — pnl=UNKNOWN (pending official settlement)")
         pm._save_all(all_pos)
+
 
     open_positions = pm.get_open_positions()
     if not open_positions:
@@ -236,28 +208,26 @@ async def main() -> None:
                 price_cents = int(round(action["close_price"] * 100))
             else:
                 price_cents = int(round((1.0 - action["close_price"]) * 100))
-            resp = await client.close_position(
-                ticker=pos["ticker"],
-                count=close_count,
-                side=close_side,
-                price_cents=price_cents,
-            )
-            # Don't mark closed locally — let sync_from_kalshi detect fills
-            # on the next cycle. This avoids re-triggering on unfilled orders.
-            entry_price = pos.get("entry_price", 0) or 0
-            close_px = action["close_price"]
-            pnl = round((close_px - entry_price) * close_count, 2)
-            log_close_event(
-                ticker=pos["ticker"],
-                count=close_count,
-                side=close_side,
-                close_price=close_px,
-                reason=action["reason"],
-                entry_price=entry_price,
-                realized_pnl=pnl,
-            )
-            print(f"[Kalshi/HEARTBEAT] ORDER PLACED {pos['ticker']} — {action['reason']} — "
-                  f"close_price=${close_px:.4f} count={close_count} side={close_side} pnl=${pnl}")
+            if live:
+                resp = await client.close_position(
+                    ticker=pos["ticker"],
+                    count=close_count,
+                    side=close_side,
+                    price_cents=price_cents,
+                )
+                # Submission is not a fill. Reconciliation records fills and
+                # only then closes/logs realized P&L.
+                order = resp.get("order") or resp
+                print(
+                    f"[Kalshi/HEARTBEAT] CLOSE SUBMITTED {pos['ticker']} — {action['reason']} — "
+                    f"close_price=${action['close_price']:.4f} count={close_count} "
+                    f"side={close_side} order_id={order.get('order_id', '')}"
+                )
+            else:
+                print(
+                    f"[Kalshi/HEARTBEAT] PAPER CLOSE {pos['ticker']} — {action['reason']} — "
+                    f"close_price=${action['close_price']:.4f} count={close_count} side={close_side}"
+                )
         except Exception as exc:
             print(f"[Kalshi/HEARTBEAT] FAILED to close {pos['ticker']}: {exc}")
 

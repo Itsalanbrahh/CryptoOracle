@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS trades (
     alpaca_order_id TEXT,
     triggered_by    TEXT DEFAULT 'manual',
     confidence      REAL,
+    entry_fees      REAL,
+    exit_fees       REAL,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     closed_at       DATETIME
 );
@@ -140,6 +142,8 @@ CREATE TABLE IF NOT EXISTS stock_trades (
     alpaca_order_id TEXT,
     triggered_by    TEXT DEFAULT 'manual',
     confidence      REAL,
+    entry_fees      REAL,
+    exit_fees       REAL,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     closed_at       DATETIME
 );
@@ -230,6 +234,12 @@ async def init_db() -> None:
             logger.info("Migrated agent_config: added config_json column")
         except Exception:
             pass  # column already exists
+        for table in ("trades", "stock_trades"):
+            for column in ("entry_fees", "exit_fees"):
+                try:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
+                except Exception:
+                    pass  # column already exists
         await db.commit()
     logger.info("Database initialised at %s", DB_PATH)
 
@@ -608,30 +618,35 @@ async def log_trade(
     alpaca_order_id: Optional[str] = None,
     triggered_by: str = "manual",
     confidence: Optional[float] = None,
+    entry_fees: Optional[float] = None,
 ) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """
             INSERT INTO trades
-                (symbol, amount_usd, entry_price, quantity, alpaca_order_id, triggered_by, confidence, status)
-            VALUES (?,?,?,?,?,?,?,'open')
+                (symbol, amount_usd, entry_price, quantity, alpaca_order_id, triggered_by,
+                 confidence, entry_fees, status)
+            VALUES (?,?,?,?,?,?,?,?,'open')
             """,
-            (symbol.upper(), amount_usd, entry_price, quantity, alpaca_order_id, triggered_by, confidence),
+            (symbol.upper(), amount_usd, entry_price, quantity, alpaca_order_id,
+             triggered_by, confidence, entry_fees),
         )
         row_id = cur.lastrowid
         await db.commit()
     return row_id
 
 
-async def close_trade(trade_id: int, exit_price: float, realized_pnl: float) -> None:
+async def close_trade(
+    trade_id: int, exit_price: float, realized_pnl: float, exit_fees: Optional[float] = None
+) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             UPDATE trades
-            SET status='closed', exit_price=?, realized_pnl=?, closed_at=CURRENT_TIMESTAMP
+            SET status='closed', exit_price=?, realized_pnl=?, exit_fees=?, closed_at=CURRENT_TIMESTAMP
             WHERE id=?
             """,
-            (exit_price, realized_pnl, trade_id),
+            (exit_price, realized_pnl, exit_fees, trade_id),
         )
         await db.commit()
 
@@ -741,32 +756,35 @@ async def log_stock_trade(
     alpaca_order_id: Optional[str] = None,
     triggered_by: str = "manual",
     confidence: Optional[float] = None,
+    entry_fees: Optional[float] = None,
 ) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """
             INSERT INTO stock_trades
                 (symbol, trade_type, amount_usd, entry_price, quantity,
-                 alpaca_order_id, triggered_by, confidence, status)
-            VALUES (?,?,?,?,?,?,?,?,'open')
+                 alpaca_order_id, triggered_by, confidence, entry_fees, status)
+            VALUES (?,?,?,?,?,?,?,?,?,'open')
             """,
             (symbol.upper(), trade_type, amount_usd, entry_price, quantity,
-             alpaca_order_id, triggered_by, confidence),
+             alpaca_order_id, triggered_by, confidence, entry_fees),
         )
         row_id = cur.lastrowid
         await db.commit()
     return row_id
 
 
-async def close_stock_trade(trade_id: int, exit_price: float, realized_pnl: float) -> None:
+async def close_stock_trade(
+    trade_id: int, exit_price: float, realized_pnl: float, exit_fees: Optional[float] = None
+) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             UPDATE stock_trades
-            SET status='closed', exit_price=?, realized_pnl=?, closed_at=CURRENT_TIMESTAMP
+            SET status='closed', exit_price=?, realized_pnl=?, exit_fees=?, closed_at=CURRENT_TIMESTAMP
             WHERE id=?
             """,
-            (exit_price, realized_pnl, trade_id),
+            (exit_price, realized_pnl, exit_fees, trade_id),
         )
         await db.commit()
 

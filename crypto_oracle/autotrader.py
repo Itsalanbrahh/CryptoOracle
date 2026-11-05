@@ -71,7 +71,7 @@ async def maybe_auto_trade(rec: MasterRecommendation) -> Optional[dict[str, Any]
 
 
 async def _auto_buy(symbol: str, amount_usd: float, confidence: float) -> Optional[dict]:
-    from crypto_oracle.alpaca.client import get_crypto_price, place_crypto_order
+    from crypto_oracle.alpaca.client import place_crypto_order
     from crypto_oracle.api.websocket import manager
 
     open_trades = await get_open_trades(symbol)
@@ -80,24 +80,34 @@ async def _auto_buy(symbol: str, amount_usd: float, confidence: float) -> Option
         return None
 
     try:
-        price = await get_crypto_price(symbol)
         result = await place_crypto_order(symbol, "buy", amount_usd)
-        qty = amount_usd / price if price > 0 else 0
+        if result.get("status") != "filled":
+            logger.warning("Auto-trade BUY not filled for %s: status=%s", symbol, result.get("status"))
+            return None
+        qty = float(result.get("filled_qty") or 0)
+        price = float(result.get("filled_avg_price") or 0)
+        if qty <= 0 or price <= 0:
+            logger.error("Auto-trade BUY fill missing quantity/price for %s", symbol)
+            return None
+        fees = result.get("fees")
+        amount_filled = round(qty * price, 4)
         trade_id = await log_trade(
             symbol=symbol,
-            amount_usd=amount_usd,
+            amount_usd=amount_filled,
             entry_price=price,
             quantity=qty,
             alpaca_order_id=result["order_id"],
             triggered_by="auto",
             confidence=confidence,
+            entry_fees=fees,
         )
-        logger.info("Auto-trade BUY: %s $%.2f @ $%.4f (trade_id=%d)", symbol, amount_usd, price, trade_id)
+        logger.info("Auto-trade BUY: %s qty=%.6f @ $%.4f fees=%s (trade_id=%d)", symbol, qty, price, fees, trade_id)
         payload = {
-            "action": "BUY", "symbol": symbol, "amount_usd": amount_usd,
+            "action": "BUY", "symbol": symbol, "amount_usd": amount_filled,
             "entry_price": price, "quantity": round(qty, 8),
             "trade_id": trade_id, "triggered_by": "auto",
             "alpaca_order_id": result["order_id"],
+            "fees": fees,
         }
         await manager.broadcast({"type": "trade", "data": payload})
         return payload
@@ -107,7 +117,7 @@ async def _auto_buy(symbol: str, amount_usd: float, confidence: float) -> Option
 
 
 async def _auto_sell(symbol: str, confidence: float) -> Optional[dict]:
-    from crypto_oracle.alpaca.client import close_crypto_position, get_crypto_price
+    from crypto_oracle.alpaca.client import close_crypto_position
     from crypto_oracle.api.websocket import manager
 
     open_trades = await get_open_trades(symbol)
@@ -116,29 +126,31 @@ async def _auto_sell(symbol: str, confidence: float) -> Optional[dict]:
         return None
 
     try:
-        price = await get_crypto_price(symbol)
-        try:
-            await close_crypto_position(symbol)
-        except Exception as exc:
-            logger.warning("Auto-trade: Alpaca close_position failed for %s (may be already flat): %s", symbol, exc)
+        result = await close_crypto_position(symbol)
+        if result.get("status") not in ("filled", "partially_filled"):
+            logger.warning("Auto-trade SELL not confirmed filled for %s: status=%s — leaving DB trades open", symbol, result.get("status"))
+            return None
+        qty_closed = float(result.get("filled_qty") or result.get("qty") or 0)
+        exit_price = float(result.get("filled_avg_price") or 0)
+        fees = result.get("fees")
 
         total_pnl = 0.0
         for trade in open_trades:
             qty = trade["quantity"] or 0
-            entry = trade["entry_price"] or price
-            pnl = (price - entry) * qty
+            entry = trade["entry_price"] or exit_price
+            pnl = (exit_price - entry) * qty
             total_pnl += pnl
-            await close_trade(trade["id"], price, round(pnl, 4))
+            await close_trade(trade["id"], exit_price, round(pnl, 4), exit_fees=fees)
 
         total_pnl = round(total_pnl, 4)
-        logger.info("Auto-trade SELL: %s @ $%.4f | P&L $%.2f (%d trades closed)", symbol, price, total_pnl, len(open_trades))
+        logger.info("Auto-trade SELL: %s qty=%.6f @ $%.4f | P&L $%.2f (%d trades closed)", symbol, qty_closed, exit_price, total_pnl, len(open_trades))
         payload = {
-            "action": "SELL", "symbol": symbol, "exit_price": price,
+            "action": "SELL", "symbol": symbol, "exit_price": exit_price,
             "realized_pnl": total_pnl, "trades_closed": len(open_trades),
-            "triggered_by": "auto",
+            "triggered_by": "auto", "fees": fees,
         }
         await manager.broadcast({"type": "trade", "data": payload})
         return payload
     except Exception as exc:
-        logger.error("Auto-trade SELL failed for %s: %s", symbol, exc, exc_info=True)
+        logger.error("Auto-trade SELL failed for %s: %s — leaving DB trades open", symbol, exc, exc_info=True)
         return None

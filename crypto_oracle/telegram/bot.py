@@ -52,6 +52,7 @@ _RUN_COOLDOWN = 300   # 5 minutes
 
 
 def _check_whitelist(chat_id: str) -> bool:
+    """Permissive check: allows all when no allowlist is configured (read-only commands)."""
     allowed_raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
     if not allowed_raw.strip():
         return True
@@ -59,10 +60,37 @@ def _check_whitelist(chat_id: str) -> bool:
     return chat_id in allowed
 
 
+def _check_mutating_allowlist(chat_id: str) -> bool:
+    """Fail-closed check for mutating commands.
+
+    Returns False (rejected) when TELEGRAM_ALLOWED_CHAT_IDS is unset or blank —
+    no one can invoke mutating commands without an explicit allowlist.
+    """
+    allowed_raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
+    if not allowed_raw.strip():
+        return False  # Fail closed — no key configured means no access
+    allowed = {s.strip() for s in allowed_raw.split(",")}
+    return chat_id in allowed
+
+
 async def _guard(update: Update) -> bool:
+    """Permissive guard for read-only commands — allows all when no allowlist set."""
     chat_id = str(update.effective_chat.id)
     if not _check_whitelist(chat_id):
         await update.message.reply_text("Unauthorised.")
+        return False
+    return True
+
+
+async def _guard_mutating(update: Update) -> bool:
+    """Fail-closed guard for mutating commands (trade/order/close/etc).
+
+    Rejects the request when TELEGRAM_ALLOWED_CHAT_IDS is unset/blank,
+    or when the chat_id is not in the configured list.
+    """
+    chat_id = str(update.effective_chat.id)
+    if not _check_mutating_allowlist(chat_id):
+        await update.message.reply_text("Not authorized.")
         return False
     return True
 
@@ -133,7 +161,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     chat_id = str(update.effective_chat.id)
     now = time.time()
@@ -248,7 +276,7 @@ async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if not context.args:
         await update.message.reply_text("Usage: /watch ETH")
@@ -259,7 +287,7 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if not context.args:
         await update.message.reply_text("Usage: /unwatch ETH")
@@ -270,7 +298,7 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     chat_id = str(update.effective_chat.id)
     if not context.args or context.args[0].lower() not in ("on", "off"):
@@ -284,7 +312,7 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if not context.args:
         await update.message.reply_text("Usage: /interval <minutes> (60-1440)")
@@ -337,7 +365,7 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     from crypto_oracle.autotrader import get_auto_trade_settings, update_auto_trade_settings
 
@@ -376,7 +404,7 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if os.getenv("SKIP_ALPACA", "false").lower() == "true":
         await update.message.reply_text("Alpaca integration is disabled.")
@@ -479,7 +507,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_sell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if os.getenv("SKIP_ALPACA", "false").lower() == "true":
         await update.message.reply_text("Alpaca integration is disabled.")
@@ -546,7 +574,7 @@ async def cmd_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_long(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manually go long on a stock. Usage: /long NVDA 200"""
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if os.getenv("SKIP_ALPACA", "false").lower() == "true":
         await update.message.reply_text("Alpaca integration is disabled.")
@@ -588,7 +616,7 @@ async def cmd_long(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_short(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manually go short on a stock. Usage: /short TSLA 150"""
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if os.getenv("SKIP_ALPACA", "false").lower() == "true":
         await update.message.reply_text("Alpaca integration is disabled.")
@@ -630,7 +658,7 @@ async def cmd_short(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_cover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Close/cover a stock position. Usage: /cover NVDA"""
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if os.getenv("SKIP_ALPACA", "false").lower() == "true":
         await update.message.reply_text("Alpaca integration is disabled.")
@@ -711,7 +739,7 @@ async def cmd_stockpnl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if not context.args:
         await update.message.reply_text("Usage: `/addstock AAPL`", parse_mode=ParseMode.MARKDOWN)
@@ -722,7 +750,7 @@ async def cmd_addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_removestock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     if not context.args:
         await update.message.reply_text("Usage: `/removestock AAPL`", parse_mode=ParseMode.MARKDOWN)
@@ -734,7 +762,7 @@ async def cmd_removestock(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cmd_runstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Run stock oracle analysis on demand."""
-    if not await _guard(update):
+    if not await _guard_mutating(update):
         return
     chat_id = str(update.effective_chat.id)
     args = context.args

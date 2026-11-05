@@ -9,6 +9,27 @@ from typing import Literal
 from .markets import KalshiMarket
 
 
+_CONSENSUS_AGENTS = (
+    "KnowledgeMarket",
+    "KronosMarket",
+    "DynamicSR",
+    "MomentumContinuation",
+)
+
+
+def directional_consensus(
+    agent_signals: dict[str, dict], side: str, *, min_agree: int = 3
+) -> tuple[bool, int]:
+    """Require the strongest recently calibrated agents to agree on direction."""
+    direction = 1 if side == "yes" else -1
+    agreeing = sum(
+        1
+        for name in _CONSENSUS_AGENTS
+        if float((agent_signals.get(name) or {}).get("score") or 0.0) * direction > 0
+    )
+    return agreeing >= min_agree, agreeing
+
+
 def _gbm_prob(spot: float, strike: float, hours_to_expiry: float, annual_vol: float, drift: float = 0.35) -> float:
     """P(BTC > strike at expiry) under lognormal GBM with BTC long-run drift.
 
@@ -51,6 +72,29 @@ def _fee_per_contract(price: float, maker: bool) -> float:
     return _fee_total(price, 1, maker)
 
 
+def _size_order(
+    price: float,
+    target_usd: float,
+    max_position_usd: float,
+    maker: bool,
+) -> tuple[int, float, float]:
+    """Return a contract count whose premium plus fee stays within the cap."""
+    if price <= 0.0 or max_position_usd <= 0.0:
+        return 0, 0.0, 0.0
+
+    max_by_premium = int(max_position_usd / price)
+    if max_by_premium < 1:
+        return 0, 0.0, 0.0
+    count = min(max_by_premium, max(1, int(target_usd / price)))
+    while count > 0:
+        fee = _fee_total(price, count, maker)
+        total_risk = round(count * price + fee, 2)
+        if total_risk <= max_position_usd + 1e-9:
+            return count, total_risk, fee
+        count -= 1
+    return 0, 0.0, 0.0
+
+
 @dataclass
 class KalshiDecision:
     ticker: str
@@ -84,6 +128,10 @@ def decide_kalshi_trade(
     maker_mode: bool = True,                # rest inside the spread (maker) vs lift the ask (taker)
     agg_tilt: float = 0.08,                 # max belief tilt from agent aggregate (dollars of prob)
     implied_prob: float | None = None,      # options-implied P(YES) anchor; preferred over GBM when set
+    momentum_block: float = 0.2,            # block counter-trend trades when |6h momentum trigger| exceeds this
+    require_implied_prob: bool = False,     # fail closed when the professional IV anchor is unavailable
+    min_no_price: float = 0.0,              # avoid lottery-like NO contracts with poor observed calibration
+    max_edge: float = 1.0,                  # huge model/market gaps usually indicate model error or stale data
 ) -> KalshiDecision:
     """
     Decide whether to buy YES or NO on a Kalshi BTC contract.
@@ -171,6 +219,9 @@ def decide_kalshi_trade(
             reasoning=reason,
         )
 
+    if require_implied_prob and implied_prob is None:
+        return _hold("options-implied anchor unavailable; refusing GBM-only entry")
+
     if confidence < min_confidence:
         return _hold(f"confidence {confidence:.2f} below threshold {min_confidence:.2f}")
 
@@ -186,12 +237,25 @@ def decide_kalshi_trade(
     buy_yes = exec_edge_yes > min_edge
     buy_no = exec_edge_no > min_edge
 
+    candidate_edge = max(exec_edge_yes if buy_yes else -1.0, exec_edge_no if buy_no else -1.0)
+    if candidate_edge > max_edge:
+        return _hold(
+            f"model edge {candidate_edge:.3f} exceeds calibrated maximum {max_edge:.3f}"
+        )
+
+    if buy_no and not buy_yes and no_exec < min_no_price:
+        return _hold(
+            f"NO execution price {no_exec:.2f} below calibrated floor {min_no_price:.2f}"
+        )
+
     if not buy_yes and not buy_no:
         return _hold(f"edge insufficient (yes={exec_edge_yes:.3f}, no={exec_edge_no:.3f})")
 
     if buy_yes:
-        # ── Momentum gate: don't buy YES in a strong downtrend ─────────────
-        if momentum_trigger < -0.5:
+        # ── Momentum gate: don't buy YES against a downtrend ───────────────
+        # Short-horizon momentum persists (documented at minute-to-hour
+        # scales); counter-trend entries need the trend to reverse first.
+        if momentum_trigger < -momentum_block:
             return _hold(
                 f"momentum={momentum_trigger:.2f}: strong downtrend, skipping YES "
                 f"(would bet against momentum)"
@@ -205,9 +269,13 @@ def decide_kalshi_trade(
         # ── Divergence cut: reduce position when agents strongly disagree ──
         if divergence_cut < 1.0:
             position_usd = position_usd * divergence_cut
-        count = max(1, int(position_usd / exec_price))
-        actual_position = round(count * exec_price, 2)
-        fee_paid = _fee_total(exec_price, count, maker_mode)
+        count, actual_position, fee_paid = _size_order(
+            exec_price, position_usd, max_position_usd, maker_mode
+        )
+        if count == 0:
+            return _hold(
+                f"position cap ${max_position_usd:.2f} cannot fund one YES contract plus fee"
+            )
         profit_if_win = round(count * (1.0 - exec_price) - fee_paid, 2)
         return KalshiDecision(
             ticker=market.ticker, strike=market.strike,
@@ -223,8 +291,12 @@ def decide_kalshi_trade(
             ),
         )
     else:
-        # ── Momentum gate: don't buy NO in a strong uptrend ────────────────
-        if momentum_trigger > 0.5:
+        # ── Momentum gate: don't buy NO against an uptrend ─────────────────
+        # NO is a bearish bet; a grind-up day used to slip under the old 0.5
+        # threshold (≈ +1% over 6h) and the bot shorted every strike on the
+        # way up. Default 0.2 ≈ +0.4% over 6h: bearish entries require the
+        # tape to be flat or falling, not merely "not surging".
+        if momentum_trigger > momentum_block:
             return _hold(
                 f"momentum={momentum_trigger:.2f}: strong uptrend, skipping NO "
                 f"(would bet against momentum)"
@@ -244,9 +316,13 @@ def decide_kalshi_trade(
         # ── Divergence cut: reduce position when agents strongly disagree ──
         if divergence_cut < 1.0:
             position_usd = position_usd * divergence_cut
-        count = max(1, int(position_usd / exec_price))
-        actual_position = round(count * exec_price, 2)
-        fee_paid = _fee_total(exec_price, count, maker_mode)
+        count, actual_position, fee_paid = _size_order(
+            exec_price, position_usd, max_position_usd, maker_mode
+        )
+        if count == 0:
+            return _hold(
+                f"position cap ${max_position_usd:.2f} cannot fund one NO contract plus fee"
+            )
         profit_if_win = round(count * (1.0 - exec_price) - fee_paid, 2)
         return KalshiDecision(
             ticker=market.ticker, strike=market.strike,

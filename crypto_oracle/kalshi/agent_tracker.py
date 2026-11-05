@@ -104,6 +104,51 @@ def _ensure_agent(stats: dict, agent_name: str) -> dict:
 # ── Recording resolved trades ──────────────────────────────────────────────
 
 
+def _record_into(stats: dict, *, side: str, won: bool, agent_signals: dict[str, dict], ticker: str) -> None:
+    """Record one resolved trade into a stats dict (no load/save)."""
+    for agent_name, sig in agent_signals.items():
+        entry = _ensure_agent(stats, agent_name)
+        entry["trades_analyzed"] += 1
+
+        score = sig.get("score", 0.0) or 0.0
+        confidence = sig.get("confidence", 0.5)
+        entry["total_confidence"] = (entry["total_confidence"] * (entry["trades_analyzed"] - 1) + confidence) / entry["trades_analyzed"]
+
+        if won:
+            entry["wins"] += 1
+        else:
+            entry["losses"] += 1
+
+        # Direction accuracy: did the agent's sign match what the price
+        # ACTUALLY did — not whether it agreed with the trade we took.
+        # The old check ((side=="no" and score<0) or (side=="yes" and score>0))
+        # scored agreement with the position, ignoring the outcome entirely.
+        # When trades lose, that upweights yes-men and punishes dissenters who
+        # were right: KronosMarket showed 0/23 "right calls" for disagreeing
+        # with 23 mostly-losing bearish trades — a 65% accurate agent weighted
+        # 0.3x while the agents that blessed every loss got 1.37x.
+        #
+        # Outcome direction: a won YES or a lost NO means the bullish outcome
+        # happened; a won NO or a lost YES means the bearish one did.
+        if score != 0.0:
+            outcome_bullish = (side == "yes") == won
+            correct_direction = (score > 0) == outcome_bullish
+            if correct_direction:
+                entry["right_side_calls"] += 1
+                entry["avg_confidence_when_right"] = (
+                    (entry["avg_confidence_when_right"] * (entry["right_side_calls"] - 1) + confidence)
+                    / entry["right_side_calls"]
+                )
+            else:
+                entry["wrong_side_calls"] += 1
+                entry["avg_confidence_when_wrong"] = (
+                    (entry["avg_confidence_when_wrong"] * (entry["wrong_side_calls"] - 1) + confidence)
+                    / entry["wrong_side_calls"]
+                )
+
+        entry["last_resolved_ticker"] = ticker
+
+
 def record_resolution(
     pos: dict,
     agent_signals: dict[str, dict] | None = None,
@@ -122,52 +167,55 @@ def record_resolution(
     ticker = pos.get("ticker", "?")
     side = pos.get("side", "")
     pnl = pos.get("realized_pnl")
-    strike = pos.get("strike", 0)
-    spot = pos.get("spot_at_entry", 0)
 
-    # Determine if the trade was a win
     won = pnl is not None and pnl > 0
 
     if not agent_signals:
-        # No agent-level data — just record the aggregate outcome
         save_stats(stats)
         return stats
 
-    # For each agent that had a signal at entry, record
-    for agent_name, sig in agent_signals.items():
-        entry = _ensure_agent(stats, agent_name)
-        entry["trades_analyzed"] += 1
-
-        score = sig.get("score", 0.0)
-        confidence = sig.get("confidence", 0.5)
-        entry["total_confidence"] = (entry["total_confidence"] * (entry["trades_analyzed"] - 1) + confidence) / entry["trades_analyzed"]
-
-        if won:
-            entry["wins"] += 1
-        else:
-            entry["losses"] += 1
-
-        # Direction accuracy: did the agent's sign match the correct direction?
-        # For a NO position: the "right" direction is bearish (score < 0)
-        # For a YES position: the "right" direction is bullish (score > 0)
-        correct_direction = (side == "no" and score < 0) or (side == "yes" and score > 0)
-        if correct_direction:
-            entry["right_side_calls"] += 1
-            entry["avg_confidence_when_right"] = (
-                (entry["avg_confidence_when_right"] * (entry["right_side_calls"] - 1) + confidence)
-                / entry["right_side_calls"]
-            )
-        else:
-            entry["wrong_side_calls"] += 1
-            entry["avg_confidence_when_wrong"] = (
-                (entry["avg_confidence_when_wrong"] * (entry["wrong_side_calls"] - 1) + confidence)
-                / entry["wrong_side_calls"]
-            )
-
-        entry["last_resolved_ticker"] = ticker
-
+    _record_into(stats, side=side, won=won, agent_signals=agent_signals, ticker=ticker)
     save_stats(stats)
     return stats
+
+
+def rebuild_from_postmortem() -> int:
+    """Wipe agent stats and rebuild from every resolved postmortem entry.
+
+    Needed whenever the direction metric changes (stats accumulated under the
+    old agreement-based metric are contaminated), and self-healing to run on
+    every calibration cycle: the postmortem log is the source of truth, so a
+    full rebuild always reflects the current metric over all history.
+
+    Returns the number of resolved trades processed.
+    """
+    from .postmortem import _LOG_PATH
+
+    stats = _default_stats()
+    recorded: set[str] = set()
+    n = 0
+    if _LOG_PATH.exists():
+        for line in _LOG_PATH.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not entry.get("resolved") or entry.get("action") not in ("BUY_YES", "BUY_NO"):
+                continue
+            sig = entry.get("agent_signals")
+            side = entry.get("side")
+            pnl = entry.get("resolved_pnl_usd")
+            ticker = entry.get("ticker", "")
+            if not sig or side not in ("yes", "no") or pnl is None or not ticker or ticker in recorded:
+                continue
+            _record_into(stats, side=side, won=pnl > 0, agent_signals=sig, ticker=ticker)
+            recorded.add(ticker)
+            n += 1
+    stats["_recorded_ticker_set"] = sorted(recorded)
+    save_stats(stats)
+    return n
 
 
 def resolve_from_postmortem() -> int:
@@ -282,14 +330,19 @@ def summary_text() -> str:
     if not agents:
         return "No agent tracking data yet — waiting for resolved trades."
 
-    lines = ["📊 **Agent Performance Tracker**"]
+    lines = ["📊 **Agent Performance Tracker** (dir = price-direction accuracy)"]
     for name, s in sorted(agents.items()):
         total = s.get("wins", 0) + s.get("losses", 0)
         wr = s["wins"] / total * 100 if total > 0 else 0
-        weight = _winrate_weight(s["wins"], s["losses"])
+        right = s.get("right_side_calls", 0)
+        wrong = s.get("wrong_side_calls", 0)
+        dir_total = right + wrong
+        # Show the SAME weight live trading uses (direction-accuracy based),
+        # not the win-rate fallback — the two diverged in earlier reports.
+        weight = _winrate_weight(s["wins"], s["losses"], right, s.get("trades_analyzed", 0))
+        dir_str = f"{right}/{dir_total} ({right / dir_total:.0%})" if dir_total else "n/a"
         lines.append(
             f"  • **{name}**: {s['wins']}W/{s['losses']}L ({wr:.0f}%) "
-            f"→ weight {weight:.2f}x "
-            f"| right-calls {s.get('right_side_calls', 0)}/{total}"
+            f"→ weight {weight:.2f}x | dir {dir_str}"
         )
     return "\n".join(lines)

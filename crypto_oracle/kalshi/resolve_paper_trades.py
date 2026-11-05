@@ -31,6 +31,35 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
+def _candle_ts(candle: dict) -> int:
+    """Return a Unix timestamp (int) from a candle dict.
+
+    fetch_historical_btc uses two code paths:
+      - Kraken path: emits {'timestamp': int, 'ts': str, ...}   — both keys present
+      - LSE path:    emits {'ts': str, ...}                      — NO 'timestamp' key
+
+    Always prefer 'timestamp' (already an int); fall back to parsing 'ts'.
+    Returns 0 on parse failure so bisect still works (candle is excluded).
+    """
+    raw = candle.get("timestamp")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    ts_str = candle.get("ts", "")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
+        except (ValueError, TypeError):
+            pass
+    return 0
+
+
 _env = Path("/Users/alanruelas/crypto_oracle/.env")
 if _env.exists():
     for _line in _env.read_text().splitlines():
@@ -61,6 +90,7 @@ async def main() -> None:
     from crypto_oracle.kalshi.backtest import fetch_historical_btc
     from crypto_oracle.kalshi.postmortem import _LOG_PATH
     from crypto_oracle.kalshi import agent_tracker as at
+    from crypto_oracle.kalshi.settlement import yes_outcome_at_settlement
 
     if not _LOG_PATH.exists():
         print("[PAPER-RESOLVE] No postmortem log found — nothing to resolve.")
@@ -71,7 +101,7 @@ async def main() -> None:
 
     # ── Fetch settlement candles (last ~30 days of hourly closes) ───────────
     candles = await fetch_historical_btc(days=30)
-    ts_list = [c["timestamp"] for c in candles]
+    ts_list = [_candle_ts(c) for c in candles]
     close_list = [c["close"] for c in candles]
 
     def settle_price_at(expiry: datetime) -> float | None:
@@ -93,7 +123,6 @@ async def main() -> None:
     skipped_range = 0
     skipped_no_data = 0
     wins = 0
-    tracker_entries: list[dict] = []
     out_lines: list[str] = []
 
     for raw in raw_lines:
@@ -119,9 +148,10 @@ async def main() -> None:
             and tte is not None
             and action in ("BUY_YES", "BUY_NO", "HOLD")
         ):
-            if entry.get("is_range"):
+            cap_strike = entry.get("cap_strike")
+            if entry.get("is_range") and cap_strike is None:
                 if not entry.get("resolved") and action != "HOLD":
-                    skipped_range += 1
+                    skipped_range += 1  # legacy rows did not record the range cap
             else:
                 expiry = entered + timedelta(hours=float(tte))
                 # Wait a full hour past expiry so the settlement candle exists
@@ -134,7 +164,9 @@ async def main() -> None:
                         # GBM-calibration outcome for EVERY entry (incl. HOLD):
                         # did BTC finish above the strike?
                         if entry.get("resolved_yes_outcome") is None:
-                            entry["resolved_yes_outcome"] = bool(settle >= strike)
+                            entry["resolved_yes_outcome"] = yes_outcome_at_settlement(
+                                settle, strike, cap_strike
+                            )
                             entry["resolved_settle_price"] = round(settle, 2)
                             resolved_outcomes += 1
                             changed = True
@@ -147,7 +179,8 @@ async def main() -> None:
                             and entry.get("side") in ("yes", "no")
                         ):
                             side = entry["side"]
-                            won = settle >= strike if side == "yes" else settle < strike
+                            yes_won = yes_outcome_at_settlement(settle, strike, cap_strike)
+                            won = yes_won if side == "yes" else not yes_won
                             pnl = (
                                 entry.get("profit_if_win") or 0.0
                                 if won
@@ -161,43 +194,21 @@ async def main() -> None:
                             if won:
                                 wins += 1
                             changed = True
-                            if entry.get("agent_signals"):
-                                tracker_entries.append(entry)
 
         out_lines.append(json.dumps(entry, default=str) if changed else raw)
 
     if resolved_trades or resolved_outcomes:
         _LOG_PATH.write_text("\n".join(out_lines).strip() + "\n")
 
-    # ── Feed direction-accuracy data into the agent tracker ─────────────────
-    # Signal direction vs outcome doesn't depend on whether the trade filled,
-    # so paper/filtered resolutions are valid tracker data. The persistent
-    # recorded-ticker set prevents double-counting against API resolutions.
-    tracked = 0
-    if tracker_entries:
-        stats = at.load_stats()
-        recorded: set[str] = set(stats.get("_recorded_ticker_set", []))
-        for e in tracker_entries:
-            ticker = e.get("ticker", "")
-            if not ticker or ticker in recorded:
-                continue
-            pos_like = {
-                "ticker": ticker,
-                "side": e.get("side", ""),
-                "realized_pnl": e.get("resolved_pnl_usd"),
-                "strike": e.get("strike", 0),
-                "spot_at_entry": e.get("spot_price", 0),
-            }
-            at.record_resolution(pos_like, e["agent_signals"])
-            recorded.add(ticker)
-            tracked += 1
-        stats = at.load_stats()
-        stats["_recorded_ticker_set"] = sorted(recorded)
-        at.save_stats(stats)
+    # ── Rebuild agent tracker stats from the full (now-updated) log ─────────
+    # A full rebuild every run keeps stats consistent with the current
+    # direction metric over ALL history (and cleans out anything accumulated
+    # under an older, buggier metric). Cheap: one pass over the JSONL.
+    tracked = at.rebuild_from_postmortem()
 
     print(
         f"[PAPER-RESOLVE] trades resolved={resolved_trades} ({wins} wins) | "
-        f"yes-outcomes recorded={resolved_outcomes} | tracker+={tracked} | "
+        f"yes-outcomes recorded={resolved_outcomes} | tracker rebuilt from {tracked} | "
         f"skipped: range={skipped_range} no-candle={skipped_no_data}"
     )
 

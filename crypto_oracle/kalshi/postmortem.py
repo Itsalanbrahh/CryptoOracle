@@ -25,6 +25,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _strategy_version() -> str:
+    """Tag outcomes so calibration never silently mixes strategy generations."""
+    return os.getenv("KALSHI_STRATEGY_VERSION", "legacy").strip() or "legacy"
+
+
 def _agent_signal_key(agent_name: str) -> str:
     """Normalise agent names to snake_case keys."""
     return agent_name[0].lower() + "".join(
@@ -74,6 +79,7 @@ def build_entry(
     resolved: bool = False,
     resolved_itm: bool | None = None,
     resolved_pnl_usd: float | None = None,
+    cap_strike: float | None = None,
 ) -> dict:
     """Build a postmortem entry dict. Does NOT write it — call log_entry()."""
     signals_flat: dict[str, float] = {}
@@ -84,8 +90,10 @@ def build_entry(
 
     return {
         "ts": _now(),
+        "strategy_version": _strategy_version(),
         "ticker": ticker,
         "strike": strike,
+        "cap_strike": cap_strike,
         "is_range": is_range,
         "side": side,
         "action": action,
